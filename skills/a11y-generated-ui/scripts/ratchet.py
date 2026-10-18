@@ -341,7 +341,7 @@ def main():
             if a.url and not a.crawl:
                 urls = {urllib.parse.urlparse(a.url).path or '/': a.url}
             if a.url and a.crawl:
-                print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])))
+                print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
                 urls = json.loads((td / 'html.json').read_text())['urls']
             if not urls:
                 sys.exit('no pages to scan')
@@ -369,7 +369,7 @@ def main():
             return 0
         timed_out = False
         try:
-            print(node('audit.mjs', td, a.theme))
+            print(node('audit.mjs', td, a.theme), file=sys.stderr)    # progress goes to stderr so that --json output stays pure JSON
         except JobTimeout:
             timed_out = True
             print('STOPPED: the audit ran past A11Y_JOB_TIMEOUT; the score below covers only the pages finished so far.', file=sys.stderr)
