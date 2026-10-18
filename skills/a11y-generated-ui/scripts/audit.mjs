@@ -36,9 +36,10 @@ for (const t of names) {
         for (const r of axe.getRules()) if (r.tags.includes('experimental') && !r.tags.includes('deprecated') && r.tags.some(t => W.includes(t))) rules[r.ruleId] = { enabled: true };
         const x = await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] }, rules, resultTypes: ['violations', 'passes', 'incomplete'] });
         const cat = (r) => (r.tags.find(t => t.startsWith('cat.')) || 'cat.other').slice(4);
-        return { v: x.violations.map(v => ({ id: v.id, impact: v.impact, nodes: v.nodes.length, cat: cat(v), help: v.help, url: v.helpUrl,
+        const sc = (r) => r.tags.filter(t => /^wcag\d{3,}$/.test(t));   // success-criterion tags, e.g. wcag131: the first digit is the WCAG principle
+        return { v: x.violations.map(v => ({ id: v.id, impact: v.impact, nodes: v.nodes.length, cat: cat(v), sc: sc(v), help: v.help, url: v.helpUrl,
           pairs: v.id === 'color-contrast' ? v.nodes.map(n => { const d = (n.any[0] || {}).data || {}; return [d.fgColor, d.bgColor, d.contrastRatio]; }) : undefined })),
-          p: x.passes.map(p => ({ id: p.id, impact: p.impact || 'moderate', cat: cat(p) })),
+          p: x.passes.map(p => ({ id: p.id, impact: p.impact || 'moderate', cat: cat(p), sc: sc(p) })),
           inc: x.incomplete.map(i => ({ id: i.id, nodes: i.nodes.length })) };   // axe could not decide these (needs a person): kept, not scored
       }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('axe timeout')), +(process.env.A11Y_AXE_TIMEOUT || 25000))),

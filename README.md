@@ -129,6 +129,8 @@ Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a
 
 It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures, so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time, and the **failing checks and the fix order** to decide work. Do not compare scores between sites, and do not quote one as a conformance claim. It is a secondary summary; the baseline and the fix order are the point.
 
+Layers follow the WCAG principle of each rule's success criterion. An earlier version grouped by axe's own categories, which put 31 of the 68 rules it runs in a different layer from their principle; the site scores on every dataset below were identical under both, because the caps decide them, but the per-layer numbers moved (for example Perceivable 66 to 72 on the 8 October catalogue).
+
 What it has been checked against (author-reported: the raw captures and comparison scripts are not in this repository, so these cannot be reproduced from it):
 
 | | pages | Lighthouse accessibility (mean) | this score |
@@ -187,7 +189,7 @@ I want to know whether this is useful beyond my own catalogue. If you maintain a
 
 ## Credit and provenance
 
-The scoring idea (a layered 0 to 100 score with grades, a list of failing checks with fix hints, a CI gate and a scan, fix, rescan loop) comes from [ora.ai](https://ora.ai), whose scanner scores how ready a domain is for AI agents ([methodology](https://ora.ai/methodology), [CLI](https://ora.ai/docs/cli)). This project is not affiliated with Ora and shares no code with it. What is mine: the accessibility checks (axe-core plus supplementary heuristics and a Tab walk), the four WCAG-based layers and their weights, the severity caps, the grade cut-offs, and the rule that a grade only ever claims "automated findings", never "accessible". `--min-score` is a common convention in audit tools.
+The scoring idea (a layered 0 to 100 score with grades, a list of failing checks with fix hints, a CI gate and a scan, fix, rescan loop) comes from [ora.ai](https://ora.ai), whose scanner scores how ready a domain is for AI agents ([methodology](https://ora.ai/methodology), [CLI](https://ora.ai/docs/cli)). This project is not affiliated with Ora and shares no code with it. What is mine: the accessibility checks (axe-core plus supplementary heuristics and a Tab walk), the four layers (each rule's WCAG principle) and their weights, the severity caps, the grade cut-offs, and the rule that a grade only ever claims "automated findings", never "accessible". `--min-score` is a common convention in audit tools.
 
 The ratchet and the cross-engine method come from an audit of an AI-generated component catalogue in October 2026; see [`references/lessons.md`](skills/a11y-generated-ui/references/lessons.md). Two independent reviews (Gemini 3.8 Flash and a second reviewer) found real defects before release; the fixes are in [`CHANGELOG.md`](CHANGELOG.md).
 

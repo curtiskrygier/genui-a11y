@@ -149,3 +149,24 @@ def test_svg_title_may_follow_other_children_and_an_empty_title_is_not_a_name():
 def test_the_ci_example_turns_the_sandbox_off_with_a_warning():
     y = (HERE / 'examples' / 'ci' / 'a11y-scan.yml').read_text()
     assert "A11Y_NO_SANDBOX: '1'" in y and 'never copy this line' in y
+
+
+def test_layers_follow_the_wcag_principle_of_the_success_criterion():
+    L = ratchet.layer_of
+    assert L({'id': 'td-has-header', 'sc': ['wcag131'], 'cat': 'tables'}) == 'perceivable'      # 1.3.1: was 'robust' under the axe-category grouping
+    assert L({'id': 'label', 'sc': ['wcag412'], 'cat': 'forms'}) == 'robust'                      # 4.1.2: was 'understandable'
+    assert L({'id': 'document-title', 'sc': ['wcag242'], 'cat': 'text-alternatives'}) == 'operable'
+    assert L({'id': 'html-has-lang', 'sc': ['wcag311'], 'cat': 'language'}) == 'understandable'
+
+
+def test_a_rule_under_two_principles_takes_the_lowest_regardless_of_tag_order():
+    assert ratchet.layer_of({'id': 'link-name', 'sc': ['wcag244', 'wcag412']}) == 'operable'
+    assert ratchet.layer_of({'id': 'link-name', 'sc': ['wcag412', 'wcag244']}) == 'operable'
+
+
+def test_a_rule_without_a_criterion_tag_falls_back_and_is_reported():
+    ratchet.FALLBACKS.clear()
+    assert ratchet.layer_of({'id': 'made-up-rule', 'sc': [], 'cat': 'keyboard'}) == 'operable'
+    assert 'made-up-rule' in ratchet.FALLBACKS
+    rep = ratchet.build_report({'a': {'v': [{'id': 'made-up-rule', 'impact': 'minor', 'nodes': 1, 'cat': 'keyboard'}], 'p': []}}, {'a': '<p>x</p>'}, 'x')
+    assert 'made-up-rule' in rep['layer_fallback_rules']

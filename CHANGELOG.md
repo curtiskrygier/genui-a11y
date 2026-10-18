@@ -5,6 +5,7 @@
 Hardening after two independent reviews (Gemini 3.8 Flash and a second reviewer):
 
 - Network guard: addresses are parsed to bytes (IPv4-mapped, NAT64, 6to4, Teredo, `::` and the other special forms are classified by what they contain; the old classifier missed the hex forms), loopback only at the exact scanned origins, scheme allowlist, WebSockets blocked, service workers bypassed, `robots.txt` and sitemap fetches do not follow redirects, sitemap host vetted and permission-checked before the fetch, Chromium sandbox on by default (`A11Y_NO_SANDBOX=1` to opt out).
+- Layers now follow the WCAG principle of each rule's success criterion (audit.mjs records the `wcagNNN` tags; the layer is the lowest principle digit; no tag: axe-category fallback, reported). Re-scored on six datasets (W3C demo pair, the catalogue site at five points between 8 and 18 October): site scores unchanged, per-layer numbers moved.
 - Static checks rewritten around parsed attributes: `role="img"` alone no longer counts as a name, `aria-hidden="false"` is not "hidden", canvas fallback text counts, `tabindex="-1"` clickables are flagged.
 - Scoring: site rules follow the real severity cap, not the page score; a what-if fix weighs like a real pass; pages with nothing assessable are `not assessed`, not 100; axe `incomplete` results are reported under `needs_manual_review`.
 - Coverage: a capped scan cannot report 100%; folder, URL-list and sitemap scans are exhaustive by default; `--min-score` checks coverage first (exit 3); page keys no longer collapse query variants or hosts.

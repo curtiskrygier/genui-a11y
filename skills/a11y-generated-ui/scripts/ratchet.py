@@ -196,8 +196,24 @@ def node(script, td, *extra):
 
 
 LAYERS = {'perceivable': 35, 'operable': 35, 'understandable': 15, 'robust': 15}
+PRINCIPLE = {'1': 'perceivable', '2': 'operable', '3': 'understandable', '4': 'robust'}
+# Fallback only, for a rule that carries no success-criterion tag (none do in axe-core 4.14 with the tag set used here; a future version might). The layer is
+# normally taken from the rule's WCAG success criterion (see layer_of); this older grouping by axe category is used when it cannot be, and the report says so.
 LAYER_OF = {'color': 'perceivable', 'text-alternatives': 'perceivable', 'sensory-and-visual-cues': 'perceivable', 'time-and-media': 'perceivable',
             'keyboard': 'operable', 'forms': 'understandable', 'language': 'understandable'}   # anything else (aria, name-role-value, structure, semantics, tables, parsing) is robust
+FALLBACKS = set()      # rule ids that had to use the category fallback in this run
+
+
+def layer_of(item):
+    """The scoring layer of an axe result: the WCAG principle of its success criterion (wcag131 -> 1 -> perceivable). A rule tagged under criteria of more than one
+    principle (area-alt, link-name: 2.4.4 and 4.1.2) takes the lowest-numbered principle, deliberately and independent of tag order. No criterion tag: category fallback."""
+    digits = [t[4] for t in (item.get('sc') or []) if re.fullmatch(r'wcag\d{3,}', t) and t[4] in PRINCIPLE]
+    if digits:
+        return PRINCIPLE[min(digits)]
+    FALLBACKS.add(item.get('id', '?'))
+    return LAYER_OF.get(item.get('cat'), 'robust')
+
+
 STATIC_LAYER = {'click_not_keyboard': 'operable', 'hidden_input_widget': 'operable', 'loop_no_reduced_motion': 'operable', 'svg_no_name': 'perceivable', 'canvas_no_text_alt': 'perceivable'}
 IMPACT_W = {'critical': 4, 'serious': 3, 'moderate': 2, 'minor': 1}
 BANDS = [(90, 'A'), (75, 'B'), (55, 'C'), (35, 'D'), (0, 'F')]   # our own cut-offs; there is deliberately no A+, because no automated score means 'done'
@@ -238,9 +254,9 @@ def score_page(res, flags, drop=frozenset(), applicable=None):
     tot_w, lost = collections.Counter(), collections.Counter()
     fail = []                                   # (check id, layer, weight)
     for p in res.get('p', []):
-        tot_w[LAYER_OF.get(p.get('cat'), 'robust')] += 2
+        tot_w[layer_of(p)] += 2
     for v in res.get('v', []):
-        L, w = LAYER_OF.get(v.get('cat'), 'robust'), IMPACT_W.get(v.get('impact'), 2)
+        L, w = layer_of(v), IMPACT_W.get(v.get('impact'), 2)
         if v['id'] in drop:
             tot_w[L] += 2                       # the what-if: a fixed check becomes a pass, which weighs 2, exactly as a real rescan would count it
         else:
@@ -335,6 +351,7 @@ def build_report(audit, items, label, requested=None):
             'pages_with_severe_barriers': capped, 'pages_not_audited': errored,
             'worst_pages': sorted(({'page': k, 'score': p[0]} for k, p in pages.items() if p[0] is not None), key=lambda x: x['score'])[:5],
             'needs_manual_review': dict(review.most_common(15)),        # axe 'incomplete': checks it could not decide; they are not in the score
+            'layer_fallback_rules': sorted(FALLBACKS),           # rules whose layer came from the axe category because they had no WCAG criterion tag (normally empty)
             'pages_not_assessed': [k for k, p in pages.items() if p[0] is None],
             'failing_checks': sorted(info.values(), key=lambda e: (-e['points_lost'], -e['pages'])),
             'pages': {k: {'score': p[0], 'grade': grade(p[0]) if p[0] is not None else None, 'layers': p[1], 'static_flags': inputs[k][1]} for k, p in pages.items()}, 'note': BANNER}
