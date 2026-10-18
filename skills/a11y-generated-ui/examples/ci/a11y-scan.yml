@@ -1,0 +1,34 @@
+# GitHub Actions: scan a built site on every pull request and fail the build below a minimum score.
+# Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (roughly a third to half of real issues): treat a pass as "no automated findings", not "accessible".
+name: Accessibility scan
+on:
+  pull_request:
+  workflow_dispatch: {}
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
+      - name: Build the site
+        run: npm ci && npm run build            # replace with your build; the output folder is scanned below
+      - name: Install the scanner
+        run: |
+          git clone --depth 1 https://github.com/curtiskrygier/genui-a11y.git .a11y   # replace with where you keep the skill
+          cd .a11y/skills/a11y-generated-ui/scripts && npm ci
+          sudo apt-get update && sudo apt-get install -y chromium
+        env: { CHROMIUM: /usr/bin/chromium }
+      - name: Scan, score and gate
+        run: |
+          python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --min-score 80
+        env: { CHROMIUM: /usr/bin/chromium }
+      - name: Keep the report
+        if: always()
+        run: python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --json > a11y-report.json || true
+        env: { CHROMIUM: /usr/bin/chromium }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: a11y-report, path: a11y-report.json }

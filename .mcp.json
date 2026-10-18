@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "a11y-scan": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/a11y-generated-ui/scripts/mcp_server.py"]
+    }
+  }
+}

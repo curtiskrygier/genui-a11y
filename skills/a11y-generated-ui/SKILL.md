@@ -1,0 +1,123 @@
+---
+name: a11y-generated-ui
+description: >-
+  Audit and ratchet the accessibility of AI-generated or schema-driven UI
+  (a component catalog an agent fills in, a declarative-UI renderer, MCP app
+  views). Renders each component, runs axe-core plus HTML_CodeSniffer and IBM
+  Equal Access in headless Chromium inside the real host theme, adds the
+  static and keyboard checks axe misses, and keeps a baseline so new
+  components must start clean and old ones cannot get worse. Use when asked to
+  "audit accessibility", "check WCAG" or "stop a11y regressing" on generated
+  UI, or when adding components to a catalog. Not a substitute for a screen
+  reader or disabled-user testing.
+license: MIT
+compatibility: Needs Python 3, Node 20+ and a Chromium; npm install in scripts/ once.
+---
+
+# a11y-generated-ui
+
+A method and a small harness for one problem: UI that an agent generates tends to inherit the agent's habits, and nobody revisits the rigour an enterprise team would apply. Origin: an audit of a 650-component catalog (Oct 2026). Read `references/lessons.md` before changing the method.
+
+## What a clean result means
+
+"No automated violations". Never "accessible". Automated engines find roughly a third to a half of real WCAG issues and say nothing about screen-reader output or how a real person uses the thing. Say so in every report you write, and say whether a screen-reader and keyboard pass has been done.
+
+## Which mode
+
+| You have | Use |
+|---|---|
+| a generator that makes components or fragments | fragment mode: `--items items.json` (write the adapter once) |
+| a built site folder | `--dir ./dist` |
+| a running site, local or one you own | `--url ... --crawl` |
+| a list of pages | `--urls pages.txt` or `--sitemap URL` |
+| an agent that should run scans itself | the local MCP server (below) |
+
+## The method
+
+1. **Standard.** WCAG 2.2, levels A and AA.
+2. **Render every component** with the real renderer into `items.json` (`{name: html}`). The only code you write is this adapter (`examples/adapter_example.py`). Put the example payloads through the same renderer production uses.
+3. **Audit in the real host theme.** Pass the host stylesheet with `--shell`. A bare white page overstates failures, because components read colours from host tokens such as `--muted`. Run light and dark, with a separate baseline each. Tell the scanner how the host goes dark: `A11Y_DARK_CLASS` (a body class, fragment mode), `A11Y_DARK_ATTR=data-theme=dark` (an attribute on the root) or `A11Y_DARK_STORAGE=a2ui-theme=dark` (a localStorage key the page reads), the last two for live sites. If light and dark results are identical, suspect the harness: the first dark scans of a real site never went dark.
+4. **Add the checks axe cannot make** (static flags in `scripts/ratchet.py`): `click_not_keyboard`, `hidden_input_widget` (CSS radio trick), `svg_no_name`, `canvas_no_text_alt`, `loop_no_reduced_motion`. Axe missed the first two on the original audit and IBM caught them.
+5. **Cross-check engines** (`--crosscheck`). One engine is one opinion. Where two or more agree, it is very likely real; where one flags it, look by hand.
+6. **Keyboard walk** (`--tabwalk`). Tabs through each component and reads the browser's accessibility tree at each stop: unnamed stops, repeated names, no visible focus, traps, controls Tab never reaches. It is the information a screen reader is built from, not a screen reader.
+7. **Ratchet.** `--baseline file --update` records exactly which items are not yet clean. Afterwards a new item must start with no findings, and a baselined item may not get worse. Fixed items are reported so the gain can be locked in.
+8. **Fix at the source.** Defaults and shared tokens first (they move the most items), then per-component. Re-run the ratchet after each batch.
+
+## Commands
+
+```
+cd scripts && npm install                    # once: axe-core, HTML_CodeSniffer, IBM Equal Access, puppeteer-core (needs Chromium; set CHROMIUM=/path if not /usr/bin/chromium)
+python3 ratchet.py --items items.json --shell host.css --baseline baseline.json            # ratchet
+python3 ratchet.py --items items.json --shell host.css --baseline baseline.json --update   # lock in a fixing batch
+python3 ratchet.py --items items.json --shell host.css --theme dark --baseline baseline-dark.json
+python3 ratchet.py --items items.json --report | --static | --tabwalk | --crosscheck
+```
+
+### Score, grade and a CI gate
+
+`--score` turns a scan into a number a person can act on: 0 to 100, a grade, a layer breakdown and the failing checks with a fix link. The idea of a layered score with a CI gate for a scan-fix-rescan loop comes from ora.ai (see the README); the layers, weights, caps and cut-offs here are our own.
+
+```
+python3 ratchet.py --url http://localhost:3000 --crawl --score
+python3 ratchet.py --dir ./dist --score --min-score 70      # exits 1 below 70, so a plain CI step fails the build
+python3 ratchet.py --dir ./dist --score --json              # full report for scripting
+```
+
+- Four layers, weighted: perceivable 35, operable 35, understandable 15, robust 15. Each layer is the weight of the checks that passed over the weight of those that applied; a failed check weighs by axe impact. Five static checks (keyboard, SVG and canvas names, endless motion) are added to the matching layers.
+- **Severity caps stop many passing checks hiding a barrier:** a critical failure or a keyboard barrier caps the page at 69, a serious failure at 84, and three or more of either at 59. A site where more than a tenth of pages are held at 69 or below cannot score above 69; more than a quarter held at 84 or below, not above 84.
+- Grades: A 90+, B 75+, C 55+, D 35+, F below; there is no A+. The labels always say "automated findings". Never present a grade as "accessible" or "compliant", and print the banner the report ends with: automated checks find roughly a third to half of real issues, and keyboard order, screen-reader output and content are not scored.
+- The tab-walk is not part of the score yet.
+
+### As an MCP tool
+
+`scripts/mcp_server.py` is a local stdio MCP server (standard library only) so an agent can run scans itself. Installed as a Claude Code plugin it registers as `a11y-scan` (see `.mcp.json`); elsewhere run `python3 scripts/mcp_server.py` as a stdio server. Run `npm install` in `scripts/` first.
+
+Tools: `scan_start` (a URL or a built folder, with `crawl`, `max_pages`, `depth`, `theme`, `confirm_permission`) returns a job id at once; `scan_status`; `scan_result` (score, grade, layers, worst pages, failing checks, the coverage note); `explain_check`. Scans take minutes, hence the job. Localhost and local folders scan freely; any other host needs `confirm_permission` in the call and `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server (an agent cannot grant itself that), and link-local and cloud-metadata addresses are never scanned. When you report a result, include its coverage note.
+
+### In CI
+
+`examples/ci/a11y-scan.yml` is a GitHub Actions workflow: build, scan the output folder, fail below `--min-score`, and keep the JSON report. `scripts/package-lock.json` pins the engines, so `npm ci` gives the same versions each run.
+
+### Scanning a site
+
+Point it at pages instead of fragments. The real page loads with its own CSS and scripts; the dark theme is requested with `prefers-color-scheme`. Every live mode takes `--report`, `--baseline`, `--theme`, `--tabwalk` and `--crosscheck` like the fragment mode.
+
+```
+python3 ratchet.py --dir ./dist --report                                   # a built site: served on localhost, every .html page audited
+python3 ratchet.py --url http://localhost:3000 --crawl --max-pages 30 --depth 2
+python3 ratchet.py --url https://example.com/docs/v2/ --crawl --path-scope --confirm-permission   # stay under /docs/v2/ only
+python3 ratchet.py --sitemap https://example.com/sitemap.xml --confirm-permission
+python3 ratchet.py --urls pages.txt --confirm-permission                   # one URL per line
+```
+
+- **Permission.** A host other than localhost is refused unless you pass `--confirm-permission`: scan only sites you own or have permission to test.
+- **Scope.** By default a crawl follows any same-origin link. Use `--path-scope` to stay under the start URL's folder, or two crawls of neighbouring sections will overlap and any comparison between them is meaningless.
+- **Politeness.** The crawler stays on one origin, follows robots.txt (`User-agent: *` Disallow lines), waits `--delay` ms between pages, and stops at `--max-pages` and `--depth`.
+- **Limits.** Pages behind a login, pages that need interaction or live data to show their content, and single-page-app routes that are not reachable by link are not covered. A whole page is scored, so expect shared header and footer findings to repeat on every page: fix them once, at the source.
+
+`--static` needs no browser and runs in seconds, so it is the one to put in fast CI. The full audit takes minutes on hundreds of components.
+
+## Rules from the original audit (details in references/lessons.md)
+
+- Audit in the host's real theme tokens, not a bare page.
+- A blind global colour swap makes things worse: a component that paints its own surface must keep its own text colours; only components that inherit the host surface inherit the host text colour.
+- Freeze animations at their end state before running axe, or contrast results flip from run to run.
+- A single default (such as an accent colour a hair under 4.5:1) can run through hundreds of components. Fix defaults first.
+- A required accessible name belongs in the payload contract: a renderer cannot invent a good label for a field the agent omitted.
+- Respect the user's own settings as the floor: reduced motion, contrast, text size, keyboard, screen reader. They always win.
+
+## When the UI is driven by an agent
+
+If a person has to discover, review, approve, monitor or cancel what an agent does, also read `references/agent-ui-checklist.md`. It is a draft checklist drawn from a live standards discussion (WebMCP issues 272 and 277), not settled rules.
+
+## Reporting
+
+Report: counts before and after with the date, what each count measures (items with an axe violation, failing contrast nodes), what was fixed at the source, what is still open, and the caveat above. Do not call anything "accessible" or "compliant".
+
+## Safety
+
+The scanner opens pages in a real browser, so it runs their JavaScript. Scan untrusted sites from a container or a machine with no sensitive network access. It refuses anything but localhost without `--confirm-permission`, never reads link-local or cloud-metadata addresses (it checks where a redirect lands, but cannot see a hostname that resolves there), and follows robots.txt. The MCP server adds a second switch an agent cannot flip: remote scanning needs `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server.
+
+## What this does NOT do
+
+No screen-reader testing, no testing with disabled people, no interactive states (open menus, dialogs, invalid forms, live regions are only seen as the page loads), no check of many WCAG 2.2 criteria that engines cannot test (for example focus not obscured, dragging alternatives, accessible authentication), no reflow or zoom checks, no cognitive-accessibility review, no content review (alt text quality, reading level). In fragment mode it runs on rendered HTML with the network blocked, so anything that depends on live data or interaction state is only checked in its default state. In site mode it sees what a fresh, signed-out visitor sees.

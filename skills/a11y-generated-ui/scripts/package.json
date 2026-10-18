@@ -1,0 +1,12 @@
+{
+  "name": "a11y-generated-ui-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Engines for the a11y-generated-ui skill: axe-core, HTML_CodeSniffer, IBM Equal Access, driven by headless Chromium.",
+  "dependencies": {
+    "puppeteer-core": "^25.3.0",
+    "axe-core": "^4.14.0",
+    "html_codesniffer": "^2.5.1",
+    "accessibility-checker-engine": "^4.0.34"
+  }
+}

@@ -1,0 +1,11 @@
+{
+ "ok_button": "<button type=\"button\" style=\"color:#111;background:#fff\">Save</button>",
+ "ok_labelled_input": "<label for=\"e\">Email</label> <input id=\"e\" type=\"email\" style=\"color:#111\">",
+ "click_on_span": "<span onclick=\"go()\" style=\"color:#111\">Open the report</span>",
+ "css_radio_tabs": "<style>.t input{display:none}.t label{padding:4px 8px}</style><div class=\"t\"><input type=\"radio\" name=\"g\" id=\"a\" checked><label for=\"a\">One</label><input type=\"radio\" name=\"g\" id=\"b\"><label for=\"b\">Two</label></div>",
+ "low_contrast_text": "<p style=\"color:#aaa;background:#fff\">Pale grey on white</p>",
+ "unnamed_svg": "<svg width=\"24\" height=\"24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"#334\"/></svg>",
+ "canvas_no_alt": "<canvas width=\"120\" height=\"60\"></canvas>",
+ "endless_spinner": "<style>@keyframes s{to{transform:rotate(360deg)}}.sp{animation:s 1s linear infinite}</style><div class=\"sp\" aria-hidden=\"true\">o</div>",
+ "unlabelled_input": "<input type=\"text\" placeholder=\"Search\">"
+}
