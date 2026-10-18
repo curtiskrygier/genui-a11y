@@ -11,31 +11,72 @@ const DARK_STORE = process.env.A11Y_DARK_STORAGE || '';      // live mode, for s
 // ---- Network safety --------------------------------------------------------------------------------------------------------------------------
 // A scan loads someone's page and runs its scripts, so every request the browser makes (the page, redirects, images, scripts) is checked:
 //   * link-local and cloud-metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal) are never reached;
-//   * private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) are blocked unless A11Y_ALLOW_PRIVATE=1;
-//   * a public hostname that resolves to loopback is blocked (a rebinding trick); only localhost / 127.0.0.1 / ::1 themselves are loopback targets.
+//   * private and special-use ranges (10/8, 172.16/12, 192.168/16, 100.64/10, 198.18/15, multicast, fc00::/7, fec0::/10, Teredo ...) are blocked
+//     unless A11Y_ALLOW_PRIVATE=1;
+//   * loopback is reachable only at the exact origin(s) being scanned (a local build on 127.0.0.1:8777 may load its own files, but a page on a remote
+//     host cannot probe your localhost, and a scan of one local port cannot reach another);
+//   * a public hostname that resolves to loopback is blocked (a rebinding trick);
+//   * only http, https, data, blob and about URLs are allowed; WebSockets and file/ftp URLs are blocked, and service workers are bypassed.
+// Addresses are parsed to bytes, and every form that embeds an IPv4 address (IPv4-mapped, NAT64, 6to4, IPv4-compatible) is classified by the IPv4
+// inside it. Anything that cannot be parsed is treated as not public.
 // Each target host is resolved once here and pinned for the browser (--host-resolver-rules), so the address checked is the address used.
-// Residual risk: subresource hosts are checked per request but not pinned; for untrusted sites still scan from a container with no sensitive network access.
+// Residual risk: redirect and subresource hosts are checked per request but not pinned (a hostile DNS server could answer differently to Chromium than
+// to Node); for untrusted sites scan from a container with no sensitive network access.
 const LOCAL_NAMES = new Set(['localhost', '127.0.0.1', '::1']);
-export const isLocalName = (h) => LOCAL_NAMES.has(String(h).replace(/^\[|\]$/g, '').toLowerCase());
-export function classify(ip) {
-  let a = ip.split('%')[0].toLowerCase();
-  const mapped = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) a = mapped[1];
-  if (net.isIPv4(a)) {
-    const [o1, o2] = a.split('.').map(Number);
-    if (o1 === 127) return 'loopback';
-    if (o1 === 169 && o2 === 254) return 'link-local';
-    if (o1 === 10 || o1 === 0 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168) || (o1 === 100 && o2 >= 64 && o2 <= 127)) return 'private';
-    return 'public';
-  }
-  if (a === '::1') return 'loopback';
-  if (/^fe[89ab]/.test(a)) return 'link-local';
-  if (/^f[cd]/.test(a)) return 'private';
+const bare = (h) => String(h).replace(/^\[|\]$/g, '').toLowerCase();
+export const isLocalName = (h) => LOCAL_NAMES.has(bare(h));
+function classify4(o) {
+  const [o1, o2, o3] = o;
+  if (o1 === 127) return 'loopback';
+  if (o1 === 169 && o2 === 254) return 'link-local';
+  if (o1 === 0 || o1 === 10 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168) || (o1 === 100 && o2 >= 64 && o2 <= 127)
+      || (o1 === 192 && o2 === 0 && o3 === 0) || (o1 === 198 && (o2 === 18 || o2 === 19)) || o1 >= 224) return 'private';
   return 'public';
 }
-const vetted = new Map();   // hostname -> Promise<string[]> of addresses, or a rejection
+function ipv6Bytes(a) {   // 16 bytes, or null if a is not a valid IPv6 address
+  let s = a;
+  const dotted = s.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (dotted) {
+    const p = dotted.slice(1).map(Number);
+    if (p.some(x => x > 255)) return null;
+    s = s.slice(0, s.length - dotted[0].length) + ((p[0] << 8) | p[1]).toString(16) + ':' + ((p[2] << 8) | p[3]).toString(16);
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 1 ? head.length !== 8 : fill < 1) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? fill : 0).fill('0'), ...tail];
+  if (groups.length !== 8) return null;
+  const out = [];
+  for (const g of groups) { if (!/^[0-9a-f]{1,4}$/.test(g)) return null; const v = parseInt(g, 16); out.push(v >> 8, v & 255); }
+  return out;
+}
+export function classify(ip) {
+  const a = String(ip).split('%')[0].toLowerCase();
+  if (net.isIPv4(a)) return classify4(a.split('.').map(Number));
+  const b = net.isIPv6(a) ? ipv6Bytes(a) : null;
+  if (!b) return 'private';                                                    // unparseable: never treated as public
+  const zero = (from, to) => b.slice(from, to).every(x => x === 0);
+  if (zero(0, 16)) return 'loopback';                                          // :: (the unspecified address connects to localhost on Linux)
+  if (zero(0, 15) && b[15] === 1) return 'loopback';                           // ::1
+  if (zero(0, 10) && b[10] === 255 && b[11] === 255) return classify4(b.slice(12));   // ::ffff:a.b.c.d (IPv4-mapped)
+  if (zero(0, 12)) { const c = classify4(b.slice(12)); return c === 'public' ? 'private' : c; }   // ::a.b.c.d (IPv4-compatible, deprecated)
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12)) return classify4(b.slice(12));   // 64:ff9b::/96 (NAT64)
+  if (b[0] === 0x20 && b[1] === 0x02) return classify4(b.slice(2, 6));         // 2002::/16 (6to4)
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0 && b[3] === 0) return 'private';   // 2001::/32 (Teredo: the IPv4 inside is obfuscated)
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0x80) return 'link-local';           // fe80::/10
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0xc0) return 'private';              // fec0::/10 (site-local, deprecated)
+  if ((b[0] & 0xfe) === 0xfc) return 'private';                               // fc00::/7
+  if (b[0] === 0xff) return 'private';                                        // ff00::/8 multicast
+  if (b[0] === 0x01 && zero(1, 8)) return 'private';                          // 100::/64 (discard)
+  return 'public';
+}
+let LOCAL_ORIGINS = new Set();   // host:port of the scan targets that are on this machine
+const vetted = new Map();        // hostname -> Promise<string[]> of addresses, or a rejection
 export function vetHost(hostname) {
-  const h = String(hostname).replace(/^\[|\]$/g, '').toLowerCase();
+  const h = bare(hostname);
   if (!vetted.has(h)) {
     vetted.set(h, (async () => {
       if (h === 'metadata.google.internal') throw new Error(h + ' is a cloud-metadata address: never scanned');
@@ -51,19 +92,36 @@ export function vetHost(hostname) {
   }
   return vetted.get(h);
 }
+// One request's verdict: scheme allowlist, then (for loopback) the exact-origin rule, then the address checks.
+export async function vetUrl(raw) {
+  const u = new URL(raw);
+  if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return;
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme ' + u.protocol + ' is not allowed');
+  if (isLocalName(u.hostname)) {
+    if (!LOCAL_ORIGINS.has(u.host)) throw new Error('loopback ' + u.host + ' is not one of the origins being scanned');
+    return;
+  }
+  await vetHost(u.hostname);
+}
 // Kept for the crawler: the URL the browser finally landed on must not be link-local. (vetHost does the real work; this is the cheap final check.)
 export function landedOnLinkLocal(u) {
-  try { const h = new URL(u).hostname.replace(/^\[|\]$/g, '').toLowerCase(); return classify(h) === 'link-local' || h === 'metadata.google.internal'; } catch { return false; }
+  try { const h = bare(new URL(u).hostname); return classify(h) === 'link-local' || h === 'metadata.google.internal'; } catch { return false; }
 }
 const hostsOf = (d) => (d && d.urls ? [...new Set(Object.values(d.urls).map(u => new URL(u).hostname))] : []);
+const originsOf = (d) => (d && d.urls ? [...new Set(Object.values(d.urls).map(u => new URL(u).host))] : []);
 
 // ---- Browser launch --------------------------------------------------------------------------------------------------------------------------
-// The Chromium sandbox stays ON for remote hosts. It is off only for content you control (fragments, a local folder, localhost), where containers and CI
-// often cannot create the sandbox, or when you set A11Y_NO_SANDBOX=1 yourself.
+// The Chromium sandbox is ON unless you set A11Y_NO_SANDBOX=1. Containers and some CI images cannot create it, and then the launch fails with a message
+// that says so; turn it off only for content you trust, because a page that escapes an unsandboxed Chromium runs as you.
 const BASE_ARGS = ['--disable-gpu', '--mute-audio', '--use-gl=swiftshader'];
+// Say which pages are being scanned, so loopback is allowed at exactly their origins and nowhere else. launchBrowser does this too; the crawler calls it first
+// because it checks the start URL before it launches anything.
+export function declareTargets(d) {
+  LOCAL_ORIGINS = new Set(originsOf(d).filter(o => isLocalName(o.replace(/:\d+$/, '').replace(/^\[|\]$/g, ''))));
+}
 export async function launchBrowser(puppeteer, d) {
   const hosts = hostsOf(d);
-  const trusted = hosts.every(isLocalName);
+  declareTargets(d);
   const args = [...BASE_ARGS];
   const rules = [];
   for (const h of hosts) {
@@ -72,7 +130,7 @@ export async function launchBrowser(puppeteer, d) {
     if (!isLocalName(h) && !net.isIP(h) && v4) rules.push('MAP ' + h + ' ' + v4);
   }
   if (rules.length) args.push('--host-resolver-rules=' + rules.join(','));
-  const noSandbox = process.env.A11Y_NO_SANDBOX === '1' || trusted;
+  const noSandbox = process.env.A11Y_NO_SANDBOX === '1';
   if (noSandbox) args.push('--no-sandbox');
   try {
     return await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
@@ -89,9 +147,15 @@ export async function prepare(page, d) {
   if (d.urls) {
     await page.setRequestInterception(true);
     page.on('request', async (r) => {
-      try { const u = new URL(r.url()); if (u.protocol === 'http:' || u.protocol === 'https:') await vetHost(u.hostname); await r.continue(); }
+      try { await vetUrl(r.url()); await r.continue(); }
       catch (e) { try { await r.abort('blockedbyclient'); } catch (_) {} }
     });
+    try {   // the interception above cannot see WebSockets or service-worker traffic: block both at the protocol level
+      const c = await page.createCDPSession();
+      await c.send('Network.enable');
+      await c.send('Network.setBypassServiceWorker', { bypass: true });
+      await c.send('Network.setBlockedURLs', { urls: ['ws://*', 'wss://*', 'ftp://*', 'file://*'] });
+    } catch (e) { console.error('warning: could not apply the WebSocket and service-worker block: ' + String(e.message).slice(0, 120)); }
   } else {
     await page.setRequestInterception(true);
     page.on('request', r => (r.url().startsWith('data:') || r.url().startsWith('about:')) ? r.continue() : r.abort());   // offline, deterministic

@@ -20,7 +20,7 @@ A method and a small harness for one problem: UI that an agent generates tends t
 
 ## What a clean result means
 
-"No automated violations". Never "accessible". Automated engines find roughly a third to a half of real WCAG issues and say nothing about screen-reader output or how a real person uses the thing. Say so in every report you write, and say whether a screen-reader and keyboard pass has been done.
+"No automated violations". Never "accessible". Automated engines find only a share of real WCAG issues, and how large a share depends on the tool and the content (Deque's 2021 study of 13,000+ pages found 57% of issue *occurrences*, which is not the same as 57% of criteria; this project's own rate is unmeasured). They say nothing about screen-reader output or how a real person uses the thing. Say so in every report you write, and say whether a screen-reader and keyboard pass has been done.
 
 ## Which mode
 
@@ -37,7 +37,7 @@ A method and a small harness for one problem: UI that an agent generates tends t
 1. **Standard.** WCAG 2.2, levels A and AA.
 2. **Render every component** with the real renderer into `items.json` (`{name: html}`). The only code you write is this adapter (`examples/adapter_example.py`). Put the example payloads through the same renderer production uses.
 3. **Audit in the real host theme.** Pass the host stylesheet with `--shell`. A bare white page overstates failures, because components read colours from host tokens such as `--muted`. Run light and dark, with a separate baseline each. Tell the scanner how the host goes dark: `A11Y_DARK_CLASS` (a body class, fragment mode), `A11Y_DARK_ATTR=data-theme=dark` (an attribute on the root) or `A11Y_DARK_STORAGE=a2ui-theme=dark` (a localStorage key the page reads), the last two for live sites. If light and dark results are identical, suspect the harness: the first dark scans of a real site never went dark.
-4. **Add the checks axe cannot make** (static flags in `scripts/ratchet.py`): `click_not_keyboard`, `hidden_input_widget` (CSS radio trick), `svg_no_name`, `canvas_no_text_alt`, `loop_no_reduced_motion`. Axe missed the first two on the original audit and IBM caught them.
+4. **Add supplementary heuristics** (checks axe does not make, or makes differently) (static flags in `scripts/ratchet.py`): `click_not_keyboard`, `hidden_input_widget` (CSS radio trick), `svg_no_name`, `canvas_no_text_alt`, `loop_no_reduced_motion`. Axe missed the first two on the original audit and IBM caught them.
 5. **Cross-check engines** (`--crosscheck`). One engine is one opinion. Where two or more agree, it is very likely real; where one flags it, look by hand.
 6. **Keyboard walk** (`--tabwalk`). Tabs through each component and reads the browser's accessibility tree at each stop: unnamed stops, repeated names, no visible focus, traps, controls Tab never reaches. It is the information a screen reader is built from, not a screen reader.
 7. **Ratchet.** `--baseline file --update` records exactly which items are not yet clean. Afterwards a new item must start with no findings, and a baselined item may not get worse. Fixed items are reported so the gain can be locked in.
@@ -65,7 +65,7 @@ python3 ratchet.py --dir ./dist --score --json              # full report for sc
 
 - Four layers, weighted: perceivable 35, operable 35, understandable 15, robust 15. Each layer is the weight of the checks that passed over the weight of those that applied; a failed check weighs by axe impact. Five static checks (keyboard, SVG and canvas names, endless motion) are added to the matching layers.
 - **Severity caps stop many passing checks hiding a barrier:** a critical failure or a keyboard barrier caps the page at 69, a serious failure at 84, and three or more of either at 59. A site where more than a tenth of pages are held at 69 or below cannot score above 69; more than a quarter held at 84 or below, not above 84.
-- Grades: A 90+, B 75+, C 55+, D 35+, F below; there is no A+. The labels always say "automated findings". Never present a grade as "accessible" or "compliant", and print the banner the report ends with: automated checks find roughly a third to half of real issues, and keyboard order, screen-reader output and content are not scored.
+- Grades: A 90+, B 75+, C 55+, D 35+, F below; there is no A+. The labels always say "automated findings". Never present a grade as "accessible" or "compliant", and print the banner the report ends with: automated checks find only a share of real issues, and keyboard order, screen-reader output and content are not scored.
 - The tab-walk is not part of the score yet.
 
 ### As an MCP tool
@@ -83,7 +83,7 @@ Tools: `scan_start` (a URL or a built folder, with `crawl`, `max_pages`, `depth`
 Point it at pages instead of fragments. The real page loads with its own CSS and scripts; the dark theme is requested with `prefers-color-scheme`. Every live mode takes `--report`, `--baseline`, `--theme`, `--tabwalk` and `--crosscheck` like the fragment mode.
 
 ```
-python3 ratchet.py --dir ./dist --report                                   # a built site: served on localhost, every .html page audited
+python3 ratchet.py --dir ./dist --report                                   # a built site: served on localhost, every .html page audited (no page cap unless you pass --max-pages)
 python3 ratchet.py --url http://localhost:3000 --crawl --max-pages 30 --depth 2
 python3 ratchet.py --url https://example.com/docs/v2/ --crawl --path-scope --confirm-permission   # stay under /docs/v2/ only
 python3 ratchet.py --sitemap https://example.com/sitemap.xml --confirm-permission
@@ -129,8 +129,20 @@ No screen-reader testing, no testing with disabled people, no interactive states
 | `--min-score N` | exit 1 below N; exit 3 when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited, unless `--allow-partial` |
 | `A11Y_JOB_TIMEOUT` | seconds before a run is stopped and its finished pages scored (default 7200) |
 | `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | milliseconds per page load and per axe run (defaults 40000, 25000); raise for very heavy pages |
-| `A11Y_NO_SANDBOX=1` | run Chromium without its sandbox for remote hosts (containers); local content already runs without it |
+| `A11Y_NO_SANDBOX=1` | run Chromium without its sandbox (containers and CI images that cannot create it); the sandbox is on by default, so use this only for content you trust |
+| `A11Y_MAX_JOBS` | MCP server only: concurrent scans allowed (default 2) |
 | `A11Y_ALLOW_PRIVATE=1` | allow private address ranges (your own internal hosts); link-local and metadata addresses are never allowed |
 | `A11Y_ALLOW_REMOTE=1` | MCP server only: allow hosts other than localhost (a human decision) |
 | `A11Y_SCAN_ROOT` | MCP server only: the folder local scans may read (default: its working directory) |
+
+## What each mode does, and how they interact
+
+- **Default scan** (`--items`, `--dir`, `--url`, `--urls`, `--sitemap`): axe-core plus the static heuristics, one theme (`--theme light` unless you ask for dark). Axe's `incomplete` results (things it could not decide) are kept in the report under `needs_manual_review`, not scored.
+- **`--tabwalk`** and **`--crosscheck`** are separate modes that return early. Their findings are printed and set the exit code, but do **not** feed the score or the baseline.
+- **`--max-pages`**: crawls default to 30; `--dir`, `--urls` and `--sitemap` are exhaustive unless you pass it. Pages beyond a cap you set count as not audited, so a capped scan cannot report full coverage.
+- **Pages with nothing assessable** are reported as `pages_not_assessed`, not as a perfect 100.
+- **Baseline** (`--baseline FILE`): a missing file is an error unless you pass `--update` (a typo in the path must not silently become the baseline); items that could not be audited fail the run (exit 3) instead of counting as fixed. Static findings are per item (present or not), so a second instance of a defect already in the baseline does not register.
+- **`--audit-out FILE`** writes the raw audit data (for offline rescoring). **`--only`** limits tabwalk/crosscheck to named items.
+- **Keys:** pages are named by path plus query on a single host, and by full URL when hosts are mixed.
+- **Tab walk** reports heuristics (focus-style differences, a stop limit of 60, a return to the first stop) as prompts for a person to check; it does not prove a trap or a missing focus indicator.
 

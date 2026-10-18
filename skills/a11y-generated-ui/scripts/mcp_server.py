@@ -9,19 +9,32 @@ A11Y_ALLOW_REMOTE=1 set by whoever starts the server: an agent can set the first
 addresses (169.254.0.0/16, fe80::/10) are never scanned, and private ranges are blocked unless the human sets A11Y_ALLOW_PRIVATE=1. A target that is not a folder under the
 current directory (or A11Y_SCAN_ROOT) is refused. The server runs on your machine with your network access.
 """
-import ipaddress, json, os, socket, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
+import ipaddress, json, os, signal, socket, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 JOBS = {}
+MAX_RUNNING_JOBS = int(os.environ.get('A11Y_MAX_JOBS', 2))      # concurrent scans; a third scan_start is refused until one finishes
+SUPPORTED_VERSIONS = ('2025-06-18', '2025-03-26', '2024-11-05')   # MCP protocol versions this server implements, newest first
+
+
+def bounded(a, key, default, lo, hi):
+    """An integer argument inside [lo, hi]; the declared JSON-schema bounds are enforced here, not just advertised."""
+    v = a.get(key, default)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v):
+        raise ValueError(f'{key} must be a whole number')
+    if not lo <= int(v) <= hi:
+        raise ValueError(f'{key} must be between {lo} and {hi}')
+    return int(v)
+
 VERSION = '0.1.0'
 
 STATIC_HELP = {
     'click_not_keyboard': 'A non-interactive element (span, div) has a click handler but no role and tabindex, so a keyboard user cannot operate it (WCAG 2.1.1). Use a real <button> or <a>, or add role, tabindex="0" and Enter/Space handling.',
     'hidden_input_widget': 'A radio or checkbox is hidden with display:none (the CSS radio trick), so it cannot take focus (WCAG 2.1.1). Hide it visually (clip, opacity:0, position:absolute) and keep it focusable, with a visible focus style on its label.',
-    'svg_no_name': 'An <svg> has no accessible name or aria-hidden (WCAG 1.1.1). Add role="img" with aria-label or a <title>, or aria-hidden="true" if decorative.',
-    'canvas_no_text_alt': 'A <canvas> has no text alternative (WCAG 1.1.1). Add aria-label or role="img", or a text equivalent next to it; aria-hidden if purely decorative.',
-    'loop_no_reduced_motion': 'An endless CSS animation has no prefers-reduced-motion rule (WCAG 2.2.2, 2.3.3). Add @media (prefers-reduced-motion: reduce) { animation: none } and offer a pause control for motion over five seconds.',
+    'svg_no_name': 'An <svg> has no accessible name or aria-hidden (WCAG 1.1.1). Give it an accessible name (role="img" plus aria-label, or a non-empty <title>), or aria-hidden="true" if decorative. role="img" alone is not a name.',
+    'canvas_no_text_alt': 'A <canvas> has no text alternative (WCAG 1.1.1). Add aria-label (role="img" alone is not a name), or fallback text inside the <canvas>, or a text equivalent next to it; aria-hidden if purely decorative.',
+    'loop_no_reduced_motion': 'An endless CSS animation has no prefers-reduced-motion rule (WCAG 2.2.2 for anything that moves for more than 5 seconds; 2.3.3 is a AAA criterion about interaction-triggered motion). Add @media (prefers-reduced-motion: reduce) { animation: none } and offer a pause control for motion over five seconds.',
 }
 TOOLS = [
     {'name': 'scan_start', 'description': 'Start an accessibility scan of a site (http/https URL) or a built folder (local path). Returns a job id at once; poll scan_status, then read scan_result. Automated checks only: axe-core plus static checks. Hosts other than localhost need confirm_permission.',
@@ -74,19 +87,31 @@ def check_target(target, confirm):
 
 
 def run_job(job, args):
+    proc = None
     try:
         mode, arg = check_target(args['target'], bool(args.get('confirm_permission')))
-        cmd = [sys.executable, str(HERE / 'ratchet.py'), '--score', '--json', '--theme', args.get('theme', 'light'), '--max-pages', str(int(args.get('max_pages', 15))),
-               '--depth', str(int(args.get('depth', 2)))]
+        theme = args.get('theme', 'light')
+        if theme not in ('light', 'dark'):
+            raise ValueError('theme must be light or dark')
+        cmd = [sys.executable, str(HERE / 'ratchet.py'), '--score', '--json', '--theme', theme, '--max-pages', str(bounded(args, 'max_pages', 15, 1, 100)),
+               '--depth', str(bounded(args, 'depth', 2, 0, 4))]
         if mode == 'url':
             cmd += ['--url', arg] + (['--crawl'] if args.get('crawl') else []) + (['--confirm-permission'] if args.get('confirm_permission') else [])
         else:
             cmd += ['--dir', arg]
         job['phase'] = 'scanning'
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)) + 120, stdin=subprocess.DEVNULL)   # never let the scan read the MCP stream
-        out = r.stdout
+        limit = int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)) + 120
+        # its own process group, so a timeout kills Chromium and the helper scripts too, not just the Python parent
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True)   # never let the scan read the MCP stream
+        job['pgid'] = proc.pid
+        try:
+            out, err = proc.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise RuntimeError(f'scan stopped after {limit} s')
         if '{' not in out:
-            raise RuntimeError((r.stderr or out)[-400:] or 'scan produced no report')
+            raise RuntimeError((err or out)[-400:] or 'scan produced no report')
         job['report'] = json.loads(out[out.index('{'):])
         job['status'] = 'done'
     except Exception as e:   # noqa: BLE001 - reported to the caller
@@ -99,10 +124,13 @@ def call_tool(name, a):
         if not a.get('target'):
             raise ValueError('target is required')
         mode, _ = check_target(a['target'], bool(a.get('confirm_permission')))   # refuse early, before a job exists
+        bounded(a, 'max_pages', 15, 1, 100); bounded(a, 'depth', 2, 0, 4)
+        if sum(1 for v in JOBS.values() if v.get('status') == 'running') >= MAX_RUNNING_JOBS:
+            raise ValueError(f'{MAX_RUNNING_JOBS} scans are already running; wait for one to finish (A11Y_MAX_JOBS raises the limit)')
         jid = uuid.uuid4().hex[:10]
         for old in [k for k, v in JOBS.items() if v.get('status') != 'running' and time.time() - v['started'] > 3600]:
             del JOBS[old]   # finished jobs are kept for an hour, then dropped
-        JOBS[jid] = {'status': 'running', 'phase': 'starting', 'started': time.time(), 'target': a['target'], 'mode': mode}
+        JOBS[jid] = {'status': 'running', 'phase': 'starting', 'started': time.time(), 'target': str(a['target'])[:300], 'mode': mode}
         threading.Thread(target=run_job, args=(JOBS[jid], a), daemon=True).start()
         return {'job_id': jid, 'status': 'running', 'note': 'Poll scan_status; a crawl can take a few minutes.'}
     if name == 'scan_status':
@@ -152,7 +180,7 @@ def main():
             continue
         i, method, p = m.get('id'), m.get('method'), m.get('params') or {}
         if method == 'initialize':
-            reply(i, {'protocolVersion': p.get('protocolVersion') or '2025-06-18', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'a11y-scan', 'version': VERSION}})
+            reply(i, {'protocolVersion': (p.get('protocolVersion') if p.get('protocolVersion') in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0]), 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'a11y-scan', 'version': VERSION}})
         elif method == 'tools/list':
             reply(i, {'tools': TOOLS})
         elif method == 'tools/call':

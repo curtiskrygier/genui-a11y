@@ -11,7 +11,7 @@ One loop, from "what is wrong" to "it can't come back". Each step is a command o
 7. **Gate.** `--score --min-score N` fails a CI step below a threshold; `--static` runs in seconds with no browser, for fast checks.
 8. **Let an agent drive it.** The local MCP server (`scan_start`, `scan_status`, `scan_result`, `explain_check`) lets an agent run the loop: scan, read the fix order, make the change, rescan.
 9. **Run it hosted, privately.** The same scanner runs as a Cloudflare Worker using Browser Run (a Durable Object per scan, a monthly browser-seconds budget, REST and MCP endpoints, owner token only), so CI and agents can call it without a local Chromium. A JavaScript scorer is held equal to the Python one by a parity test. See `build-runbook.md` and the worker's README.
-10. **Say what it does not cover.** Every report ends with the coverage note: automated checks find roughly a third to half of real issues; keyboard order, screen-reader output, content and anything behind a login are not scored. A high score is never a conformance claim.
+10. **Say what it does not cover.** Every report ends with the coverage note: automated checks find only a share of real issues (how large depends on the tool and the content); keyboard order, screen-reader output, content and anything behind a login are not scored. A high score is never a conformance claim.
 
 ## CI
 

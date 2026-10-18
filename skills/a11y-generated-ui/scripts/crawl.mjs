@@ -4,7 +4,7 @@
 // --path-scope: stay under the start URL's own folder (so /docs/v2/index.html only follows links below /docs/v2/), not just on its origin.
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { launchBrowser, prepare, landedOnLinkLocal, vetHost } from './lib.mjs';
+import { launchBrowser, prepare, landedOnLinkLocal, vetUrl, declareTargets } from './lib.mjs';
 const [dir, start, ...rest] = process.argv.slice(2);
 const opt = (k, d) => { const i = rest.indexOf('--' + k); return i >= 0 ? Number(rest[i + 1]) : d; };
 const MAX = opt('max', 30), DEPTH = opt('depth', 2), DELAY = opt('delay', 500);
@@ -13,10 +13,12 @@ const PATH_SCOPE = rest.includes('--path-scope');
 const scopePrefix = (() => { const p = new URL(start).pathname; return p.endsWith('/') ? p : p.slice(0, p.lastIndexOf('/') + 1); })();
 const SKIP = /\.(pdf|zip|png|jpe?g|gif|webp|svg|ico|css|js|json|xml|mp4|webm|mp3|woff2?|ttf|txt|csv|docx?|xlsx?)$/i;
 let disallow = [];
-await vetHost(new URL(start).hostname);   // refuse link-local / private / rebinding targets before any request, including robots.txt
+declareTargets({ urls: { start } });
+await vetUrl(start);   // refuse a bad scheme, link-local / private / rebinding targets before any request, including robots.txt
 try {
-  const r = await fetch(origin + '/robots.txt');
-  if (r.ok) {
+  // redirect: 'manual' on purpose: a redirect here could point the fetch at an address the checks above never saw. A redirected robots.txt is treated as absent.
+  const r = await fetch(origin + '/robots.txt', { redirect: 'manual', signal: AbortSignal.timeout(15000) });
+  if (r.ok && r.type !== 'opaqueredirect') {
     let applies = false;
     for (const raw of (await r.text()).split('\n')) {
       const line = raw.split('#')[0].trim();
@@ -44,7 +46,7 @@ while (queue.length && seen.size < MAX) {
     if (landedOnLinkLocal(page.url())) { skipped.push(url + '  (redirected to a link-local address)'); continue; }
     const type = (resp && resp.headers()['content-type']) || '';
     if (!/html/i.test(type)) continue;
-    seen.set(url, new URL(url).pathname || '/');
+    { const pu = new URL(url); seen.set(url, (pu.pathname || '/') + pu.search); }
     if (depth < DEPTH) {
       const links = await page.evaluate(() => [...document.querySelectorAll('a[href]')].map(a => a.href));
       for (const l of links) {

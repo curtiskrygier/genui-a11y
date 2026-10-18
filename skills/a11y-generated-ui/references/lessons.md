@@ -11,7 +11,7 @@ Components with an axe violation: 172 to 121 (light) and 245 to 193 (dark). Tab-
 3. **One default can fail everything.** A default accent of `#6366f1` was 4.46:1 on white (AA needs 4.5:1). Darkening it helped many items at once. No single colour passes AA on both a white and a dark host, so the proper fix is a theme-aware default.
 4. **Animated components flipped between pass and fail** because axe sampled contrast mid-fade. Freeze animation at its end state first.
 5. **Three engines disagreed.** On contrast-flagged components only 77 were flagged by all three and 29 by one engine alone. IBM found keyboard failures axe missed: `<span onclick>` with no role, tab stop or key handler (WCAG 2.1.1) in eight components, and the CSS radio trick `input[type=radio]{display:none}` which cannot take focus in carousel and tab-style components.
-6. **Checks only find a third to half of real issues.** They say nothing about order, focus or what is announced.
+6. **Checks find only a share of real issues** (the size of the share varies by tool and content; the figure commonly quoted is a third to a half, not measured here). They say nothing about order, focus or what is announced.
 
 ## Fixes that held
 Darker default accent with a CI test; theme-aware muted text; three corrected host tokens (the biggest single gain); accessible names for SVGs and form fields; keyboard fix (hidden inputs stay focusable, clickable non-controls get a tab stop, a role and Enter/Space); arrow-key handling for menus; a reduced-motion rule for endless CSS loops.

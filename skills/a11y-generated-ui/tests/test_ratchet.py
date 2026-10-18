@@ -30,7 +30,9 @@ def test_a_remote_host_is_refused_without_permission():
 @browser
 def test_ratchet_passes_on_rerun_and_fails_on_a_new_bad_item(tmp_path):
     base = tmp_path / 'b.json'
-    assert run('--items', str(ITEMS), '--baseline', str(base)).returncode == 0       # writes it
+    missing = run('--items', str(ITEMS), '--baseline', str(base))
+    assert missing.returncode == 3 and '--update' in missing.stderr and not base.exists()      # a missing baseline is an error, not a silent first run
+    assert run('--items', str(ITEMS), '--baseline', str(base), '--update').returncode == 0     # created deliberately
     assert run('--items', str(ITEMS), '--baseline', str(base)).returncode == 0       # unchanged
     d = json.loads(ITEMS.read_text()); d['new_pale'] = '<p style="color:#bbb;background:#fff">pale</p>'
     items2 = tmp_path / 'i2.json'; items2.write_text(json.dumps(d))

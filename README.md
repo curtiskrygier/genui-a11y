@@ -1,57 +1,135 @@
-# genui-a11y: accessibility checks for AI-generated UI
+# genui-a11y
 
-Accessibility checks and balances for AI generated UI. (a11y = accessibility.) The skill in this repo is `a11y-generated-ui`: a skill and small harness for auditing the accessibility of AI-generated or schema-driven UI, and for keeping it from regressing.
+**Accessibility regression checks for generated and template-built UI.** Render your components, audit them in the theme they will actually sit in, record what is already broken, and fail the build when something new breaks.
 
-You render each component to an HTML fragment, and the harness:
+(a11y = accessibility.) Accessibility checks and balances for AI generated UI. The skill in this repo is called `a11y-generated-ui`.
 
-- runs axe-core, then HTML_CodeSniffer and IBM Equal Access, in headless Chromium, inside the host's real theme (light and dark);
-- adds static checks axe cannot make (clickable elements with no keyboard route, the CSS radio trick, unnamed SVGs and canvases, endless animation with no reduced-motion rule);
-- scores the result 0 to 100 with a grade, a layer breakdown and the failing checks, and can fail a CI step below a minimum (`--score --min-score 70`);
-- walks each component with the Tab key and reads the browser's accessibility tree;
-- records a baseline, so a new component must start clean and an old one may not get worse.
+**Status:** early (0.1.0), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
 
-**A clean result means "no automated violations", never "accessible".** There is no screen-reader or disabled-user testing here. See `skills/a11y-generated-ui/SKILL.md`.
+[Quick start](#quick-start) · [Use with an agent](#use-with-an-agent-mcp) · [Options](#options-and-exit-codes) · [What it does not do](#what-it-does-not-do) · [How far to trust the score](#how-far-to-trust-the-score) · [Alternatives](#alternatives) · [Safety](#safety-defaults)
 
-## Use
+## Demo
 
+Nine sample components, six of them with a planted defect. This is the real output of the quick start below, trimmed:
+
+```text
+score 69/100  grade C (many automated findings)  9 of 9 page(s)/item(s) scored
+   65 C   click_on_span      perc=100 oper=0   unde=100 robu=100
+   65 C   css_radio_tabs     perc=100 oper=0   unde=100 robu=100
+   68 C   canvas_no_alt      perc=40  unde=100 robu=100
+   68 C   unnamed_svg        perc=40  unde=100 robu=100
+  100 A   ok_button          perc=100 oper=100 unde=100 robu=100
+fix order (assumes EVERY instance of a check is fixed; each step re-scores the whole site):
+  1. fix click_not_keyboard           69 -> 69 (C)
+  2. fix hidden_input_widget          69 -> 85 (B)
+  3. fix loop_no_reduced_motion       85 -> 89 (B)
+  4. fix canvas_no_text_alt           89 -> 93 (A)
+  5. fix color-contrast               93 -> 96 (A)
+  6. fix svg_no_name                  96 -> 100 (A)
 ```
-cd skills/a11y-generated-ui/scripts && npm install      # needs Node 20+ and a Chromium (set CHROMIUM=/path if not /usr/bin/chromium)
-python3 ratchet.py --items ../examples/items.json --report
+
+A clean result means "no automated violations", never "accessible". Automated checks find only a share of real problems, and nothing here tests screen-reader output or involves disabled people.
+
+## Why
+
+When an agent or a template system generates your UI, one default can fail hundreds of pages at once (a pale accent colour, an unlabelled icon, a hidden radio button). Auditing the live site finds the symptoms; fixing them one page at a time never ends. This tool is built for that case:
+
+- **Render each component on its own**, inside the host's real stylesheet and theme (light and dark). A bare white page overstates some failures and hides others.
+- **Baseline what you already know about.** A new component must start clean and an old one may not get worse. Existing problems do not block the build; new ones do.
+- **Rank the shared defects.** The fix order re-scores the whole site at each step, so the one change that clears 15 pages comes first.
+- **Make the audit callable by an agent**, so a generation-and-repair loop can check its own output.
+
+It also scans ordinary sites (a built folder, a running site, a sitemap). That works, but for a one-off check of a typical site, [Lighthouse or pa11y](#alternatives) are more mature and easier. Use this where components come from a generator.
+
+## Quick start
+
+**You need:** Node 20+, Python 3, and a Chromium or Chrome (`sudo apt install chromium` on Debian or Ubuntu; set `CHROMIUM=/path` if it is not at `/usr/bin/chromium`).
+
+```bash
+git clone https://github.com/curtiskrygier/genui-a11y.git
+cd genui-a11y/skills/a11y-generated-ui/scripts
+npm ci
+python3 ratchet.py --items ../examples/items.json --score
 ```
 
-`examples/adapter_example.py` shows the only part you write for fragments: turning your generator's output into `{name: html}`.
+You should see output like the demo above. If Chromium cannot start because its sandbox is unavailable (some containers and CI images), set `A11Y_NO_SANDBOX=1`, and only for content you trust.
 
-To scan a site instead: `python3 ratchet.py --dir ./dist --report`, or `--url http://localhost:3000 --crawl`. Add `--path-scope` to stay under the start URL's folder. Hosts other than localhost need `--confirm-permission`: scan only sites you own or have permission to test.
+Stuck? See [Troubleshooting](#troubleshooting).
 
-## As an MCP tool
+## Usage
 
-`skills/a11y-generated-ui/scripts/mcp_server.py` is a local stdio MCP server (standard library only): `scan_start`, `scan_status`, `scan_result`, `explain_check`. As a Claude Code plugin it registers itself via `.mcp.json`. It runs on your machine with your network access: other hosts need `confirm_permission` in the call and `A11Y_ALLOW_REMOTE=1` set by whoever starts the server, and link-local addresses are never scanned. A hosted, public version would need its own abuse and permission design and is not part of this.
+### Audit your own components (fragment mode)
 
-## Layout
+You write one small adapter that turns your generator's output into `{name: html}`; [`examples/adapter_example.py`](skills/a11y-generated-ui/examples/adapter_example.py) and [`examples/adapter_json_schema.py`](skills/a11y-generated-ui/examples/adapter_json_schema.py) show two. Then:
 
-- `.claude-plugin/plugin.json`: Claude Code plugin manifest. `.mcp.json`: registers the local MCP server. `plugin.json`: Agent Plugins manifest.
-- `skills/a11y-generated-ui/SKILL.md`: the Agent Skill (method, commands, limits).
-- `skills/a11y-generated-ui/references/`: lessons from the original audit; the end-to-end pattern; a build runbook; a draft checklist for agent-driven UI.
+```bash
+python3 ratchet.py --items items.json --shell host.css --score          # score and fix order
+python3 ratchet.py --items items.json --shell host.css --baseline b.json --update   # record today's findings
+python3 ratchet.py --items items.json --shell host.css --baseline b.json            # fail on anything new or worse
+```
 
-## Why this and not axe CLI, pa11y or Lighthouse
+`--shell` is your host stylesheet, so components read the same colour tokens they do in production.
 
-If you only need a quick check of a deployed page, use Lighthouse or the axe CLI; they are more established and need less setup. This project is for a narrower case:
+### Scan a site
 
-| | axe CLI | pa11y / pa11y-ci | Lighthouse (CI) | this |
-|---|---|---|---|---|
-| Needs a running page | yes | yes | yes | no: fragment mode renders each component on its own |
-| Engines | axe | HTML_CodeSniffer or axe | a subset of axe audits | axe, HTML_CodeSniffer and IBM Equal Access, plus static and Tab-walk checks |
-| Remembers what you already know about | no | thresholds | budgets and assertions | a per-component baseline: new components start clean, old ones cannot get worse |
-| Tells you what to fix first | no | no | lists failed audits | a fix order that re-scores the whole site at each step |
-| Keyboard and reduced motion | no | no | not scored | static checks for clickable spans, hidden radios and endless animation, and a Tab walk |
+```bash
+python3 ratchet.py --dir /path/to/dist --score                         # a built folder, served locally
+python3 ratchet.py --url http://localhost:3000 --crawl --score         # a running site you own
+python3 ratchet.py --sitemap https://example.com/sitemap.xml --confirm-permission --score
+```
 
-What it does not do: performance, SEO, login flows, single-page-app routing, or anything a screen reader or a disabled user would tell you.
+Use absolute paths, since relative ones resolve from the folder you run it in. Hosts other than localhost need `--confirm-permission`: scan only sites you own or have permission to test. Add `--path-scope` to stay under the start URL's folder.
+
+### Gate a CI build
+
+```bash
+python3 ratchet.py --dir ./dist --score --json --min-score 80 > report.json
+```
+
+[`examples/ci/a11y-scan.yml`](skills/a11y-generated-ui/examples/ci/a11y-scan.yml) is a GitHub Actions template (not yet run on a third-party repository).
+
+## Use with an agent (MCP)
+
+[`scripts/mcp_server.py`](skills/a11y-generated-ui/scripts/mcp_server.py) is a local stdio MCP server using only the standard library. Its tools are `scan_start`, `scan_status`, `scan_result` and `explain_check`. Scans take minutes, so a scan is a job you poll.
+
+```json
+{ "mcpServers": { "a11y-scan": { "command": "python3", "args": ["/path/to/genui-a11y/skills/a11y-generated-ui/scripts/mcp_server.py"] } } }
+```
+
+As a Claude Code plugin the repo registers the server itself via [`.mcp.json`](.mcp.json). The server runs on your machine with your network access. Other hosts need `confirm_permission` in the call **and** `A11Y_ALLOW_REMOTE=1` set by whoever starts the server, because an agent can set the first itself. Agent-facing guidance is in [`SKILL.md`](skills/a11y-generated-ui/SKILL.md). A hosted public version is not part of this repo; it would need its own abuse and permission design.
+
+## Options and exit codes
+
+| Option | Default | What it does |
+|---|---|---|
+| `--items FILE`, `--dir DIR`, `--url URL`, `--urls FILE`, `--sitemap URL` | none (give one) | what to audit |
+| `--score` / `--json` | off | score 0 to 100 with grade, layers, points lost per check, fix order / the same as JSON |
+| `--min-score N` | none | exit 1 below N |
+| `--min-coverage PCT`, `--allow-partial` | 90 | with `--min-score`: exit 3 if fewer than PCT of the requested pages could be audited |
+| `--baseline FILE`, `--update` | none | the ratchet; a missing baseline is an error unless you pass `--update` |
+| `--max-pages N` | 30 for `--crawl`; no cap for `--dir`, `--urls`, `--sitemap` | page cap; pages beyond a cap you set count as not audited |
+| `--theme light\|dark` | light | colour scheme to request |
+| `--tabwalk`, `--crosscheck` | off | separate modes (Tab key walk; HTML_CodeSniffer and IBM Equal Access cross-check); they print findings and set the exit code but do not feed the score |
+| `A11Y_JOB_TIMEOUT` | 7200 s | stop a run and score the pages finished so far |
+| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | 40000, 25000 ms | per page load and per axe run; raise for very heavy pages |
+| `A11Y_NO_SANDBOX=1`, `A11Y_ALLOW_PRIVATE=1` | off | see [Safety](#safety-defaults) |
+
+Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a baseline), **3** the audit could not be trusted (too little coverage, items that could not be audited, no pages, or a missing baseline). Progress prints as pages finish and results are saved as they go, so a timeout keeps what finished and the headline says `PARTIAL`. Full details: [`SKILL.md`](skills/a11y-generated-ui/SKILL.md).
+
+## What it does not do
+
+- It does not test with a screen reader, a keyboard user or any disabled person. Automated checks find only a share of real problems, and that share varies by tool and content.
+- It does not log in, follow single-page-app routes, or test states that need interaction beyond the Tab walk.
+- The static checks are regexes over HTML. They miss some barriers (a listener added by script) and flag some non-barriers. A flag is a prompt to look; a clean result is not proof.
+- It does not cover every WCAG 2.2 success criterion. Selecting A and AA tags in axe is not criterion-level coverage.
+- The Tab walk reports heuristics (focus-style differences, a stop limit of 60). It does not prove a keyboard trap or a missing focus indicator.
+- Performance, SEO and best-practice audits are out of scope.
 
 ## How far to trust the score
 
-It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures, so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time and the **failing checks and the fix order** to decide work; do not compare scores between sites or quote one as a conformance claim.
+It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures, so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time, and the **failing checks and the fix order** to decide work. Do not compare scores between sites, and do not quote one as a conformance claim. It is a secondary summary; the baseline and the fix order are the point.
 
-What it has been checked against, on one catalogue and two public demo pages:
+What it has been checked against (author-reported: the raw captures and comparison scripts are not in this repository, so these cannot be reproduced from it):
 
 | | pages | Lighthouse accessibility (mean) | this score |
 |---|---|---|---|
@@ -59,38 +137,63 @@ What it has been checked against, on one catalogue and two public demo pages:
 | W3C "after" demo | 15 | 93.6 | 84 |
 | the 650-component catalogue's site | 39 | 98.7 | 94 |
 
-The two tools rank pages the same way (Spearman 0.94 across the W3C "before" pages, 0.79 across the catalogue's), and both score the fixed demo well above the broken one. They disagree on level: this is stricter by design. The W3C figures were measured on captured page source, because the live site answers Lighthouse with a redirect page.
+The two tools rank pages the same way (Spearman 0.94 across the W3C "before" pages, 0.79 across the catalogue's), and both score the fixed demo well above the broken one. They disagree on level; this is stricter by design. The W3C figures were measured on captured page source, because the live site answers Lighthouse with a redirect page.
 
-The comparison also caught a real gap: Lighthouse flagged `td-has-header` on 14 pages where an earlier version of this scanner reported nothing, because axe marks some WCAG rules experimental and a tag-selected run never executes them. The same site then scored 69 instead of 94 (one empty `<th>` in a shared template). The scanner now switches on every experimental rule that carries a WCAG tag (`references/lessons.md`, lesson 14).
+That comparison also caught a real gap: Lighthouse flagged `td-has-header` on 14 pages where an earlier version of this scanner reported nothing, because axe marks some WCAG rules experimental and a run that selects rules by tag never executes them. The same site then scored 69 instead of 94 (one empty `<th>` in a shared template). The scanner now switches on every experimental rule that carries a WCAG tag ([lesson 14](skills/a11y-generated-ui/references/lessons.md)).
+
+## Alternatives
+
+| If you want | Use | Why not this |
+|---|---|---|
+| a quick check of a deployed page | Lighthouse, or the axe CLI | more established, nothing to set up |
+| axe on components you already have in Storybook, failing CI | Storybook's accessibility addon | it is built for exactly that. This repo is for components that have no Storybook, because a generator produces them |
+| multi-page runs with scripted actions | pa11y / pa11y-ci | handles interactions; this does not |
+| guided manual and keyboard testing | Accessibility Insights | assisted keyboard review is more complete than the Tab walk here |
+| content-author feedback in a CMS | Sa11y | different audience |
+
+What this adds, narrowly: a small adapter to enter an audit from any generator, the host-theme render, a per-component baseline, and a fix order across the whole site. None of that is novel in itself; whether the combination helps anyone else is untested.
 
 ## Safety defaults
 
 A scan loads someone's page and runs its scripts, so:
 
-- The Chromium sandbox is **on** for remote hosts. It is off only for content you control (fragments, a local folder, localhost), or when you set `A11Y_NO_SANDBOX=1` yourself (some containers and CI images cannot create it).
-- Every request the browser makes, including redirects and subresources, is checked: link-local and cloud-metadata addresses are never reached, private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) are blocked unless you set `A11Y_ALLOW_PRIVATE=1`, and a public name that resolves to loopback is blocked. The address checked for each target host is the address pinned for the browser.
-- Not covered: a name that changes its answer between the check and the request for a *subresource* host. For untrusted sites, scan from a container with no sensitive network access.
-- The MCP server scans only folders under its working directory (or `A11Y_SCAN_ROOT`), and remote hosts only if whoever starts it sets `A11Y_ALLOW_REMOTE=1`.
+- The Chromium sandbox is **on**. Containers and some CI images cannot create it; there, set `A11Y_NO_SANDBOX=1`, and only for content you trust, because a page that escapes an unsandboxed Chromium runs as you.
+- Every request the browser makes, including redirects and subresources, is checked. Link-local and cloud-metadata addresses are never reached. Private and special-use ranges (10/8, 172.16/12, 192.168/16, 100.64/10, multicast, fc00::/7, Teredo and others) are blocked unless you set `A11Y_ALLOW_PRIVATE=1`. Addresses are parsed to bytes, so every form that wraps an IPv4 address (IPv4-mapped, NAT64, 6to4) is judged by the IPv4 inside it.
+- Loopback is reachable only at the exact origin being scanned: a local build on `127.0.0.1:8777` can load its own files, and a remote page cannot probe your localhost or another local port.
+- Only http, https, data, blob and about URLs are allowed; WebSockets, file and ftp are blocked and service workers are bypassed. The `robots.txt` and sitemap fetches do not follow redirects.
+- The address checked for each *starting* host is the address pinned for the browser. Redirect and subresource hosts are checked per request but not pinned, so a hostile DNS server could answer Chromium differently from the check. **For untrusted sites, scan from a container with no sensitive network access.**
+- A folder scan serves only files that really live under the folder; a symlink pointing outside it is a 404.
+- The MCP server scans only folders under its working directory (or `A11Y_SCAN_ROOT`), allows at most `A11Y_MAX_JOBS` (default 2) scans at once, enforces its argument bounds, kills a scan's whole process group on timeout, and negotiates the protocol version.
 
-## Big scans, partial results and exit codes
+## Try it and tell me
 
-Progress is printed as pages finish (`[12/593] /path`). Results are saved as they go, so a run that hits `A11Y_JOB_TIMEOUT` (seconds, default 7200) keeps the pages it finished and says `PARTIAL`. The headline reads `scored N of M`, pages that errored (for example a navigation timeout) are listed as `NOT AUDITED`, and with `--min-score` the exit code is **1** below the minimum, **3** when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited (override with `--allow-partial`). Very heavy pages need `A11Y_NAV_TIMEOUT` and `A11Y_AXE_TIMEOUT` (milliseconds, defaults 40000 and 25000), or scan them in small batches with `--urls`.
+I want to know whether this is useful beyond my own catalogue. If you maintain a generated or template-built UI (especially one that already uses Storybook's accessibility tests), try it for an afternoon and tell me, in an issue:
 
-## Status
+1. Could you connect your renderer without my help?
+2. Did it catch a real regression your current workflow missed?
+3. Did the baseline cut noise without hiding failures?
+4. Did the fix order change what you fixed first?
+5. Would you keep it in CI after the experiment?
 
-Early (0.1.0). Dependencies are pinned (`scripts/package-lock.json`), and there is a CI example (`examples/ci/a11y-scan.yml`, not yet run on a real repository) and CI for this repo.
+## Troubleshooting
 
-What it has actually been run on, honestly: one 650-component catalogue (fragment mode, light and dark), that catalogue's public site (a sampled live crawl and a full scan of its 593 built pages), and the two W3C demo sites. The second adapter, `examples/adapter_json_schema.py`, is a small worked example, not a second real system. No login, no single-page-app routes, no screen-reader testing.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `no node_modules next to ...` | dependencies not installed | `cd skills/a11y-generated-ui/scripts && npm ci` |
+| `Failed to launch the browser process` | no Chromium, or its sandbox cannot start | install Chromium, set `CHROMIUM=/path`; in a container add `A11Y_NO_SANDBOX=1` (trusted content only) |
+| `resolves to a private address ... blocked` | the host is on a private network | `A11Y_ALLOW_PRIVATE=1`, for hosts you own |
+| exit 3, `only N% of the requested pages were audited` | pages timed out or the run was stopped | raise `A11Y_NAV_TIMEOUT` / `A11Y_JOB_TIMEOUT`, scan in batches with `--urls`, or pass `--allow-partial` |
+| exit 3, `no baseline at ...` | the baseline file does not exist | create it with `--update` |
 
-## Provenance and credit
+## Credit and provenance
 
-The scoring idea, a layered 0 to 100 score with grades, a list of failing checks with fix hints, a CI gate (`--min-score`) and a scan, fix, rescan loop, comes from [ora.ai](https://ora.ai), whose scanner scores how ready a domain is for AI agents ([methodology](https://ora.ai/methodology), [CLI](https://ora.ai/docs/cli)). This project is not affiliated with Ora and shares no code with it. What is ours: the accessibility checks (axe-core plus static and keyboard checks), the four WCAG-based layers and their weights, the severity caps, the grade cut-offs, and the rule that a grade only ever claims "automated findings", never "accessible". `--min-score` is a common convention in audit tools.
+The scoring idea (a layered 0 to 100 score with grades, a list of failing checks with fix hints, a CI gate and a scan, fix, rescan loop) comes from [ora.ai](https://ora.ai), whose scanner scores how ready a domain is for AI agents ([methodology](https://ora.ai/methodology), [CLI](https://ora.ai/docs/cli)). This project is not affiliated with Ora and shares no code with it. What is mine: the accessibility checks (axe-core plus supplementary heuristics and a Tab walk), the four WCAG-based layers and their weights, the severity caps, the grade cut-offs, and the rule that a grade only ever claims "automated findings", never "accessible". `--min-score` is a common convention in audit tools.
 
-The ratchet and the cross-engine method come from an audit of an AI-generated component catalog (October 2026); see `skills/a11y-generated-ui/references/lessons.md`.
+The ratchet and the cross-engine method come from an audit of an AI-generated component catalogue in October 2026; see [`references/lessons.md`](skills/a11y-generated-ui/references/lessons.md). Two independent reviews (Gemini 3.8 Flash and a second reviewer) found real defects before release; the fixes are in [`CHANGELOG.md`](CHANGELOG.md).
 
-## Licences
+## Licence
 
-This project is MIT (see `LICENSE`). It installs, and does not bundle, these tools under their own licences:
+MIT: see [`LICENSE`](LICENSE). It installs, and does not bundle, these tools under their own licences:
 
 | Tool | Licence |
 |---|---|

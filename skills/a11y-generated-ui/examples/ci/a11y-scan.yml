@@ -1,5 +1,5 @@
 # GitHub Actions: scan a built site on every pull request and fail the build below a minimum score.
-# Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (roughly a third to half of real issues): treat a pass as "no automated findings", not "accessible".
+# Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (only a share of real issues): treat a pass as "no automated findings", not "accessible".
 # Not yet run end to end on a real repository: try it on a branch first.
 name: Accessibility scan
 on:
