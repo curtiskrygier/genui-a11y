@@ -83,14 +83,45 @@ def static_applicable(html):
     return a
 
 
+class JobTimeout(Exception):
+    """The engine script ran past A11Y_JOB_TIMEOUT. Whatever it had already written to audit.json is kept."""
+
+
 def node(script, td, *extra):
+    """Run an engine script. Its progress lines (stderr) are shown as they happen. A script that runs past A11Y_JOB_TIMEOUT seconds
+    (default 7200) is stopped and JobTimeout is raised; audit.mjs writes audit.json as it goes, so the pages done so far are not lost."""
     env = dict(os.environ)
     if not (HERE / 'node_modules').exists() and 'NODE_PATH' not in env:
         sys.exit(f'no node_modules next to {HERE}: run `npm install` there once')
-    r = subprocess.run(['node', str(HERE / script), str(td), *extra], capture_output=True, text=True, timeout=3000, cwd=HERE, env=env)
-    if r.returncode:
-        sys.exit(f'{script} failed: ' + (r.stderr or r.stdout)[-800:])
-    return r.stdout.strip()
+    p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env)
+    tail, chunks = collections.deque(maxlen=12), []
+
+    def pump_err():
+        for line in p.stderr:
+            tail.append(line.rstrip())
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    def pump_out():
+        chunks.append(p.stdout.read())
+    threads = [threading.Thread(target=pump_err, daemon=True), threading.Thread(target=pump_out, daemon=True)]
+    for th in threads:
+        th.start()
+    try:
+        p.wait(timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)))
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        for th in threads:
+            th.join(2)
+        raise JobTimeout(script)
+    for th in threads:
+        th.join(5)
+    out = ''.join(chunks)
+    if p.returncode:
+        msg = next((ln for ln in reversed(tail) if re.search(r'\bError: ', ln)), None)   # the one-line reason, not the stack trace
+        sys.exit(f'{script} failed: ' + (msg or '\n'.join(tail) or out)[-800:])
+    return out.strip()
 
 
 LAYERS = {'perceivable': 35, 'operable': 35, 'understandable': 15, 'robust': 15}
@@ -184,7 +215,7 @@ def site_score(inputs, drop=frozenset()):
     return site, pages
 
 
-def build_report(audit, items, label):
+def build_report(audit, items, label, requested=None):
     inputs, errored, info = {}, {}, {}
     for k, v in sorted(audit.items()):
         if 'err' in v:
@@ -218,12 +249,18 @@ def build_report(audit, items, label):
         order.append({'fix': best, 'score_before': cur, 'score_after': new, 'grade_after': grade(new), 'pages': info[best]['pages']})
         dropped.add(best); left.discard(best); cur = new
     capped = sum(1 for p in pages.values() if p[0] <= 84)
-    return {'target': label, 'pages_scanned': len(pages), 'score': site, 'grade': grade(site), 'grade_word': grade_word(grade(site)),
+    rep = {'target': label, 'pages_scanned': len(pages), 'score': site, 'grade': grade(site), 'grade_word': grade_word(grade(site)),
             'points_lost_to_severity_caps': jr1(cap_total / n), 'fix_order': order,
             'pages_with_severe_barriers': capped, 'pages_not_audited': errored,
             'worst_pages': sorted(({'page': k, 'score': p[0]} for k, p in pages.items()), key=lambda x: x['score'])[:5],
             'failing_checks': sorted(info.values(), key=lambda e: (-e['points_lost'], -e['pages'])),
             'pages': {k: {'score': p[0], 'grade': grade(p[0]), 'layers': p[1], 'static_flags': inputs[k][1]} for k, p in pages.items()}, 'note': BANNER}
+    if requested is not None:
+        missing = [k for k in requested if k not in audit]
+        rep['pages_requested'] = len(requested)
+        rep['pages_missing'] = missing           # asked for, but never audited (the run was stopped); pages_not_audited has those that errored
+        rep['coverage'] = jr1(100 * len(pages) / max(len(requested), 1))
+    return rep
 
 
 def tot(d, rule):
@@ -241,6 +278,8 @@ def main():
     ap.add_argument('--score', action='store_true', help='score 0-100 with a grade, layer breakdown and the failing checks (scan, score, fix, rescan; see the README for where the idea comes from)')
     ap.add_argument('--json', action='store_true', help='with --score: the full report as JSON')
     ap.add_argument('--min-score', type=int, default=None, help='with --score: exit 1 when the site score is below this')
+    ap.add_argument('--min-coverage', type=float, default=90.0, help='with --min-score: exit 3 when fewer than this percent of the requested pages could be audited (default 90)')
+    ap.add_argument('--allow-partial', action='store_true', help='with --min-score: do not fail the gate on low coverage')
     ap.add_argument('--crawl', action='store_true', help='with --url: follow same-origin links')
     ap.add_argument('--path-scope', action='store_true', help='with --crawl: stay under the start URL\'s folder, not just its origin')
     ap.add_argument('--max-pages', type=int, default=30)
@@ -328,8 +367,14 @@ def main():
             r = subprocess.run([sys.executable, str(HERE / 'crosscheck_report.py'), str(td), '--theme', a.theme], capture_output=True, text=True)
             print(r.stdout or r.stderr)
             return 0
-        print(node('audit.mjs', td, a.theme))
-        audit = json.loads((td / 'audit.json').read_text())
+        timed_out = False
+        try:
+            print(node('audit.mjs', td, a.theme))
+        except JobTimeout:
+            timed_out = True
+            print('STOPPED: the audit ran past A11Y_JOB_TIMEOUT; the score below covers only the pages finished so far.', file=sys.stderr)
+        audit = json.loads((td / 'audit.json').read_text()) if (td / 'audit.json').exists() else {}
+        requested = list(json.loads((td / 'html.json').read_text()).get('urls', json.loads((td / 'html.json').read_text()).get('html', {})))
     cur = {'axe': {}, 'static': {}}
     pairs = collections.defaultdict(list)
     errors = [k for k, v in audit.items() if 'err' in v]
@@ -348,11 +393,14 @@ def main():
     if a.audit_out:
         Path(a.audit_out).write_text(json.dumps({'audit': audit, 'items': items}))
     if a.score or a.json or a.min_score is not None:
-        rep = build_report(audit, items, a.url or a.sitemap or a.dir or a.urls or a.items)
+        rep = build_report(audit, items, a.url or a.sitemap or a.dir or a.urls or a.items, requested)
+        if rep['pages_scanned'] == 0:
+            print('no pages could be audited' + (f" ({len(rep['pages_not_audited'])} errored, {len(rep.get('pages_missing', []))} never finished)" if requested else ''), file=sys.stderr)
+            return 3
         if a.json:
             print(json.dumps(rep, indent=1))
         else:
-            print(f"score {rep['score']}/100  grade {rep['grade']} ({rep['grade_word']})  {rep['pages_scanned']} page(s)/item(s)")
+            print(f"score {rep['score']}/100  grade {rep['grade']} ({rep['grade_word']})  {rep['pages_scanned']} of {rep.get('pages_requested', rep['pages_scanned'])} page(s)/item(s) scored" + ('' if rep.get('coverage', 100) >= 100 else f"  *** PARTIAL: {rep['coverage']}% covered ***"))
             for k, p in sorted(rep['pages'].items(), key=lambda kv: kv[1]['score'])[:12]:
                 print(f"  {p['score']:3d} {p['grade']:2s}  {k}  " + ' '.join(f'{L[:4]}={v}' for L, v in p['layers'].items()))
             if rep['pages_not_audited']:
@@ -368,6 +416,10 @@ def main():
         if a.min_score is not None and rep['score'] < a.min_score:
             print(f"score {rep['score']} is below --min-score {a.min_score}", file=sys.stderr)
             return 1
+        if a.min_score is not None and rep.get('coverage', 100) < a.min_coverage and not a.allow_partial:
+            print(f"only {rep['coverage']}% of the requested pages were audited (--min-coverage {a.min_coverage}): the score is not trustworthy as a gate. "
+                  "Raise A11Y_NAV_TIMEOUT / A11Y_JOB_TIMEOUT, scan in smaller batches, or pass --allow-partial.", file=sys.stderr)
+            return 3
         return 0
     print(f"{len(audit)} items audited ({a.theme} page), {len(errors)} errors; axe violations in {len(cur['axe'])} items, static flags in {len(cur['static'])}")
     if a.report or not a.baseline:

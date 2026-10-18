@@ -6,7 +6,8 @@ Scans take minutes, so the scan is a job: scan_start returns an id at once, scan
 
 Safety: localhost and local folders are scanned freely. Any other host needs BOTH confirm_permission=true in the call AND the environment variable
 A11Y_ALLOW_REMOTE=1 set by whoever starts the server: an agent can set the first itself, so the second is the human's switch. Link-local and cloud-metadata
-addresses (169.254.0.0/16, fe80::/10) are never scanned. The server runs on your machine with your network access.
+addresses (169.254.0.0/16, fe80::/10) are never scanned, and private ranges are blocked unless the human sets A11Y_ALLOW_PRIVATE=1. A target that is not a folder under the
+current directory (or A11Y_SCAN_ROOT) is refused. The server runs on your machine with your network access.
 """
 import ipaddress, json, os, socket, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
 from pathlib import Path
@@ -50,8 +51,12 @@ def check_target(target, confirm):
             raise ValueError(f'cannot resolve {host}')
         for a in addrs:
             ip = ipaddress.ip_address(a.split('%')[0])
-            if ip.is_link_local:
+            if ip.is_link_local or host == 'metadata.google.internal':
                 raise ValueError(f'{host} resolves to a link-local address ({a}); never scanned')
+            if (ip.is_private and not ip.is_loopback) and os.environ.get('A11Y_ALLOW_PRIVATE') != '1':
+                raise ValueError(f'{host} resolves to a private address ({a}); blocked. Whoever starts this server can allow internal hosts with A11Y_ALLOW_PRIVATE=1')
+            if ip.is_loopback and host not in ('localhost', '127.0.0.1', '::1'):
+                raise ValueError(f'{host} resolves to a loopback address; blocked')
         if not all(ipaddress.ip_address(a.split('%')[0]).is_loopback for a in addrs):
             if os.environ.get('A11Y_ALLOW_REMOTE') != '1':
                 raise ValueError(f'{host} is not localhost: remote scanning is off. Whoever runs this server must start it with A11Y_ALLOW_REMOTE=1 (a human decision: scan only sites you own or have permission to test)')
@@ -60,7 +65,11 @@ def check_target(target, confirm):
         return 'url', target
     p = Path(target).expanduser()
     if p.is_dir():
-        return 'dir', str(p.resolve())
+        root = Path(os.environ.get('A11Y_SCAN_ROOT') or os.getcwd()).resolve()
+        rp = p.resolve()
+        if root != rp and root not in rp.parents:
+            raise ValueError(f'{rp} is outside {root}: set A11Y_SCAN_ROOT to the folder scans may read')
+        return 'dir', str(rp)
     raise ValueError('target must be an http(s) URL or an existing folder')
 
 
@@ -74,7 +83,7 @@ def run_job(job, args):
         else:
             cmd += ['--dir', arg]
         job['phase'] = 'scanning'
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, stdin=subprocess.DEVNULL)   # never let the scan read the MCP stream
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)) + 120, stdin=subprocess.DEVNULL)   # never let the scan read the MCP stream
         out = r.stdout
         if '{' not in out:
             raise RuntimeError((r.stderr or out)[-400:] or 'scan produced no report')
@@ -91,6 +100,8 @@ def call_tool(name, a):
             raise ValueError('target is required')
         mode, _ = check_target(a['target'], bool(a.get('confirm_permission')))   # refuse early, before a job exists
         jid = uuid.uuid4().hex[:10]
+        for old in [k for k, v in JOBS.items() if v.get('status') != 'running' and time.time() - v['started'] > 3600]:
+            del JOBS[old]   # finished jobs are kept for an hour, then dropped
         JOBS[jid] = {'status': 'running', 'phase': 'starting', 'started': time.time(), 'target': a['target'], 'mode': mode}
         threading.Thread(target=run_job, args=(JOBS[jid], a), daemon=True).start()
         return {'job_id': jid, 'status': 'running', 'note': 'Poll scan_status; a crawl can take a few minutes.'}

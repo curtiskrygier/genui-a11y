@@ -121,3 +121,16 @@ The scanner opens pages in a real browser, so it runs their JavaScript. Scan unt
 ## What this does NOT do
 
 No screen-reader testing, no testing with disabled people, no interactive states (open menus, dialogs, invalid forms, live regions are only seen as the page loads), no check of many WCAG 2.2 criteria that engines cannot test (for example focus not obscured, dragging alternatives, accessible authentication), no reflow or zoom checks, no cognitive-accessibility review, no content review (alt text quality, reading level). In fragment mode it runs on rendered HTML with the network blocked, so anything that depends on live data or interaction state is only checked in its default state. In site mode it sees what a fresh, signed-out visitor sees.
+
+## Options and environment
+
+| Setting | What it does |
+|---|---|
+| `--min-score N` | exit 1 below N; exit 3 when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited, unless `--allow-partial` |
+| `A11Y_JOB_TIMEOUT` | seconds before a run is stopped and its finished pages scored (default 7200) |
+| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | milliseconds per page load and per axe run (defaults 40000, 25000); raise for very heavy pages |
+| `A11Y_NO_SANDBOX=1` | run Chromium without its sandbox for remote hosts (containers); local content already runs without it |
+| `A11Y_ALLOW_PRIVATE=1` | allow private address ranges (your own internal hosts); link-local and metadata addresses are never allowed |
+| `A11Y_ALLOW_REMOTE=1` | MCP server only: allow hosts other than localhost (a human decision) |
+| `A11Y_SCAN_ROOT` | MCP server only: the folder local scans may read (default: its working directory) |
+

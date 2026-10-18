@@ -1,5 +1,5 @@
 """The stdio MCP server: protocol shape, safety refusals and (with a browser) a real scan of a local folder."""
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 from pathlib import Path
 import pytest
 
@@ -9,8 +9,8 @@ HAVE_BROWSER = (HERE / 'scripts' / 'node_modules').exists()
 
 
 class Client:
-    def __init__(self):
-        self.p = subprocess.Popen([sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    def __init__(self, env=None):
+        self.p = subprocess.Popen([sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, **(env or {})})
         self.n = 0
         self.call('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 't', 'version': '0'}})
 
@@ -52,7 +52,8 @@ def test_explains_a_static_check(client):
 
 
 @pytest.mark.skipif(not HAVE_BROWSER, reason='run npm install in scripts/')
-def test_scans_a_local_folder_end_to_end(client, tmp_path):
+def test_scans_a_local_folder_end_to_end(tmp_path):
+    client = Client({'A11Y_SCAN_ROOT': str(tmp_path)})
     (tmp_path / 'index.html').write_text('<!doctype html><html lang="en"><title>t</title><main><span onclick="x()">go</span><p style="color:#aaa;background:#fff">pale</p></main></html>')
     err, out = client.tool('scan_start', target=str(tmp_path))
     assert not err and out['status'] == 'running'
@@ -65,3 +66,11 @@ def test_scans_a_local_folder_end_to_end(client, tmp_path):
     _, rep = client.tool('scan_result', job_id=out['job_id'])
     ids = {c['id'] for c in rep['failing_checks']}
     assert {'color-contrast', 'click_not_keyboard'} <= ids and rep['score'] <= 69 and 'not a conformance claim' in rep['note'], rep
+
+
+def test_refuses_private_ranges_and_folders_outside_the_scan_root(client, tmp_path):
+    for target in ('http://10.0.0.1/', 'http://192.168.1.1/'):
+        err, msg = client.tool('scan_start', target=target, confirm_permission=True)
+        assert err and 'private address' in msg and 'A11Y_ALLOW_PRIVATE' in msg
+    err, msg = client.tool('scan_start', target=str(tmp_path))      # the server's root is its working directory, not a temp folder
+    assert err and 'A11Y_SCAN_ROOT' in msg

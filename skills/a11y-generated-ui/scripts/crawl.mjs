@@ -4,7 +4,7 @@
 // --path-scope: stay under the start URL's own folder (so /docs/v2/index.html only follows links below /docs/v2/), not just on its origin.
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { CHROME_ARGS, landedOnLinkLocal } from './lib.mjs';
+import { launchBrowser, prepare, landedOnLinkLocal, vetHost } from './lib.mjs';
 const [dir, start, ...rest] = process.argv.slice(2);
 const opt = (k, d) => { const i = rest.indexOf('--' + k); return i >= 0 ? Number(rest[i + 1]) : d; };
 const MAX = opt('max', 30), DEPTH = opt('depth', 2), DELAY = opt('delay', 500);
@@ -13,6 +13,7 @@ const PATH_SCOPE = rest.includes('--path-scope');
 const scopePrefix = (() => { const p = new URL(start).pathname; return p.endsWith('/') ? p : p.slice(0, p.lastIndexOf('/') + 1); })();
 const SKIP = /\.(pdf|zip|png|jpe?g|gif|webp|svg|ico|css|js|json|xml|mp4|webm|mp3|woff2?|ttf|txt|csv|docx?|xlsx?)$/i;
 let disallow = [];
+await vetHost(new URL(start).hostname);   // refuse link-local / private / rebinding targets before any request, including robots.txt
 try {
   const r = await fetch(origin + '/robots.txt');
   if (r.ok) {
@@ -28,8 +29,9 @@ try {
 } catch {}
 const allowed = (u) => !disallow.some(p => new URL(u).pathname.startsWith(p));
 const norm = (u) => { const x = new URL(u); x.hash = ''; if (x.pathname.length > 1) x.pathname = x.pathname.replace(/\/+$/, ''); return x.toString(); };
-const b = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args: CHROME_ARGS });
+const b = await launchBrowser(puppeteer, { urls: { start } });
 const page = await b.newPage();
+await prepare(page, { urls: { start } });   // viewport plus the per-request network check
 await page.setViewport({ width: 1100, height: 800 });
 const seen = new Map(), queue = [[norm(start), 0]];
 const skipped = [];

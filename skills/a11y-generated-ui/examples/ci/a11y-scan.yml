@@ -1,5 +1,6 @@
 # GitHub Actions: scan a built site on every pull request and fail the build below a minimum score.
 # Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (roughly a third to half of real issues): treat a pass as "no automated findings", not "accessible".
+# Not yet run end to end on a real repository: try it on a branch first.
 name: Accessibility scan
 on:
   pull_request:
@@ -16,19 +17,26 @@ jobs:
       - name: Build the site
         run: npm ci && npm run build            # replace with your build; the output folder is scanned below
       - name: Install the scanner
+        # Pin to a release tag (or a full commit SHA), never the default branch: this code runs in your CI.
         run: |
-          git clone --depth 1 https://github.com/curtiskrygier/genui-a11y.git .a11y   # replace with where you keep the skill
+          git clone --depth 1 --branch v0.1.0 https://github.com/curtiskrygier/genui-a11y.git .a11y
           cd .a11y/skills/a11y-generated-ui/scripts && npm ci
-          sudo apt-get update && sudo apt-get install -y chromium
-        env: { CHROMIUM: /usr/bin/chromium }
       - name: Scan, score and gate
-        run: |
-          python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --min-score 80
-        env: { CHROMIUM: /usr/bin/chromium }
-      - name: Keep the report
+        # One scan: the JSON report is written to a file and the exit code gates the build.
+        # GitHub's Ubuntu runners ship Google Chrome, so nothing is installed. Scanning a local folder runs Chromium without its sandbox
+        # (the content is yours); set nothing extra. Exit 1 = score below the minimum, exit 3 = too few pages could be audited.
+        run: python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --json --min-score 80 > a11y-report.json
+        env: { CHROMIUM: /usr/bin/google-chrome }
+      - name: Summary
         if: always()
-        run: python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --json > a11y-report.json || true
-        env: { CHROMIUM: /usr/bin/chromium }
+        run: |
+          python3 - <<'PY'
+          import json
+          r = json.load(open('a11y-report.json'))
+          print(f"score {r['score']} ({r['grade']}), {r['pages_scanned']} of {r.get('pages_requested', r['pages_scanned'])} pages; not audited: {len(r['pages_not_audited'])}")
+          for c in r['failing_checks'][:10]:
+              print(f"  {c['id']:30s} {c['impact']:9s} pages={c['pages']} points_lost={c['points_lost']}")
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: a11y-report, path: a11y-report.json }

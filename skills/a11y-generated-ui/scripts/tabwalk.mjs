@@ -3,7 +3,7 @@
 // Input: <dir>/html.json + shell.css (as audit.mjs). Output: <dir>/tabwalk.json  {atom: {stops:[...], findings:{rule:count}, composite_unreached:n}}
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, prepare, open, CHROME_ARGS } from './lib.mjs';
+import { readInput, namesOf, prepare, open, launchBrowser } from './lib.mjs';
 const dir = process.argv[2];
 const dark = process.argv[3] === 'dark';
 const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.css', 'utf8') : '';
@@ -13,7 +13,7 @@ const MAXSTOPS = 60;
 const NEEDS_NAME = new Set(['button','link','checkbox','radio','textbox','searchbox','combobox','listbox','slider','spinbutton','switch','tab','menuitem','menuitemcheckbox','menuitemradio','option','treeitem','img','image']);
 const CONTROLS = new Set(['button','link','checkbox','textbox','searchbox','combobox','listbox','slider','spinbutton','switch']);
 const COMPOSITE = new Set(['radio','tab','menuitem','menuitemcheckbox','menuitemradio','option','treeitem']);
-const b = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args: CHROME_ARGS });
+const b = await launchBrowser(puppeteer, d);
 const page = await b.newPage();
 await prepare(page, d);
 const cdp = await page.createCDPSession();

@@ -4,14 +4,14 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, rootSel, prepare, open, CHROME_ARGS } from './lib.mjs';
+import { readInput, namesOf, rootSel, prepare, open, launchBrowser } from './lib.mjs';
 const require = createRequire(import.meta.url);
 const [dir, theme, engine, only] = process.argv.slice(2);
 const d = readInput(dir);
 const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.css', 'utf8') : '';
 const src = engine === 'htmlcs' ? fs.readFileSync(require.resolve('html_codesniffer/build/HTMLCS.js'), 'utf8')
                                 : fs.readFileSync(require.resolve('accessibility-checker-engine/ace.js'), 'utf8');
-const b = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args: CHROME_ARGS });
+const b = await launchBrowser(puppeteer, d);
 const page = await b.newPage();
 await prepare(page, d);
 const names = only ? only.split(',') : namesOf(d);

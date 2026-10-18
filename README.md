@@ -33,9 +33,54 @@ To scan a site instead: `python3 ratchet.py --dir ./dist --report`, or `--url ht
 - `skills/a11y-generated-ui/SKILL.md`: the Agent Skill (method, commands, limits).
 - `skills/a11y-generated-ui/references/`: lessons from the original audit; the end-to-end pattern; a build runbook; a draft checklist for agent-driven UI.
 
+## Why this and not axe CLI, pa11y or Lighthouse
+
+If you only need a quick check of a deployed page, use Lighthouse or the axe CLI; they are more established and need less setup. This project is for a narrower case:
+
+| | axe CLI | pa11y / pa11y-ci | Lighthouse (CI) | this |
+|---|---|---|---|---|
+| Needs a running page | yes | yes | yes | no: fragment mode renders each component on its own |
+| Engines | axe | HTML_CodeSniffer or axe | a subset of axe audits | axe, HTML_CodeSniffer and IBM Equal Access, plus static and Tab-walk checks |
+| Remembers what you already know about | no | thresholds | budgets and assertions | a per-component baseline: new components start clean, old ones cannot get worse |
+| Tells you what to fix first | no | no | lists failed audits | a fix order that re-scores the whole site at each step |
+| Keyboard and reduced motion | no | no | not scored | static checks for clickable spans, hidden radios and endless animation, and a Tab walk |
+
+What it does not do: performance, SEO, login flows, single-page-app routing, or anything a screen reader or a disabled user would tell you.
+
+## How far to trust the score
+
+It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures, so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time and the **failing checks and the fix order** to decide work; do not compare scores between sites or quote one as a conformance claim.
+
+What it has been checked against, on one catalogue and two public demo pages:
+
+| | pages | Lighthouse accessibility (mean) | this score |
+|---|---|---|---|
+| W3C "before" demo (made inaccessible on purpose) | 20 | 78 | 69 |
+| W3C "after" demo | 15 | 93.6 | 84 |
+| the 650-component catalogue's site | 39 | 98.7 | 94 |
+
+The two tools rank pages the same way (Spearman 0.94 across the W3C "before" pages, 0.79 across the catalogue's), and both score the fixed demo well above the broken one. They disagree on level: this is stricter by design. The W3C figures were measured on captured page source, because the live site answers Lighthouse with a redirect page.
+
+The comparison also caught a real gap: Lighthouse flagged `td-has-header` on 14 pages where an earlier version of this scanner reported nothing, because axe marks some WCAG rules experimental and a tag-selected run never executes them. The same site then scored 69 instead of 94 (one empty `<th>` in a shared template). The scanner now switches on every experimental rule that carries a WCAG tag (`references/lessons.md`, lesson 14).
+
+## Safety defaults
+
+A scan loads someone's page and runs its scripts, so:
+
+- The Chromium sandbox is **on** for remote hosts. It is off only for content you control (fragments, a local folder, localhost), or when you set `A11Y_NO_SANDBOX=1` yourself (some containers and CI images cannot create it).
+- Every request the browser makes, including redirects and subresources, is checked: link-local and cloud-metadata addresses are never reached, private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) are blocked unless you set `A11Y_ALLOW_PRIVATE=1`, and a public name that resolves to loopback is blocked. The address checked for each target host is the address pinned for the browser.
+- Not covered: a name that changes its answer between the check and the request for a *subresource* host. For untrusted sites, scan from a container with no sensitive network access.
+- The MCP server scans only folders under its working directory (or `A11Y_SCAN_ROOT`), and remote hosts only if whoever starts it sets `A11Y_ALLOW_REMOTE=1`.
+
+## Big scans, partial results and exit codes
+
+Progress is printed as pages finish (`[12/593] /path`). Results are saved as they go, so a run that hits `A11Y_JOB_TIMEOUT` (seconds, default 7200) keeps the pages it finished and says `PARTIAL`. The headline reads `scored N of M`, pages that errored (for example a navigation timeout) are listed as `NOT AUDITED`, and with `--min-score` the exit code is **1** below the minimum, **3** when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited (override with `--allow-partial`). Very heavy pages need `A11Y_NAV_TIMEOUT` and `A11Y_AXE_TIMEOUT` (milliseconds, defaults 40000 and 25000), or scan them in small batches with `--urls`.
+
 ## Status
 
-Early (0.1.0). Dependencies are pinned (`scripts/package-lock.json`), there is a CI example (`examples/ci/a11y-scan.yml`), and the dark-mode options for live sites are documented in `SKILL.md`. Developed on one 650-component catalog; site mode has been tried only on local static pages. No login, no single-page-app routes, no screen-reader testing.
+Early (0.1.0). Dependencies are pinned (`scripts/package-lock.json`), and there is a CI example (`examples/ci/a11y-scan.yml`, not yet run on a real repository) and CI for this repo.
+
+What it has actually been run on, honestly: one 650-component catalogue (fragment mode, light and dark), that catalogue's public site (a sampled live crawl and a full scan of its 593 built pages), and the two W3C demo sites. The second adapter, `examples/adapter_json_schema.py`, is a small worked example, not a second real system. No login, no single-page-app routes, no screen-reader testing.
 
 ## Provenance and credit
 
