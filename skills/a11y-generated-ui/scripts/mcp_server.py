@@ -100,9 +100,10 @@ def run_job(job, args):
         else:
             cmd += ['--dir', arg]
         job['phase'] = 'scanning'
-        limit = int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)) + 120
+        limit = int(os.environ.get('A11Y_JOB_TIMEOUT', 1800)) + 120
         # its own process group, so a timeout kills Chromium and the helper scripts too, not just the Python parent
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True)   # never let the scan read the MCP stream
+        env = {**os.environ, 'A11Y_JOB_TIMEOUT': os.environ.get('A11Y_JOB_TIMEOUT', '1800')}      # an agent-started scan stops after 30 minutes unless the human who runs the server allows more
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True)   # never let the scan read the MCP stream
         job['pgid'] = proc.pid
         try:
             out, err = proc.communicate(timeout=limit)

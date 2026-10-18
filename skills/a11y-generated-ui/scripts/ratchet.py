@@ -92,7 +92,7 @@ def static_flags(html):
         f.append('hidden_input_widget')   # the same trick in a <style> rule
     for m in re.finditer(r'<svg\b([^>]*)>(.{0,200})', html, re.S | re.I):
         at, rest = _attrs(m.group(1)), m.group(2)
-        named = at.get('aria-label', '').strip() or at.get('aria-labelledby', '').strip() or re.match(r'\s*<title\b[^>]*>\s*[^<\s]', rest, re.I)
+        named = at.get('aria-label', '').strip() or at.get('aria-labelledby', '').strip() or re.search(r'<title\b[^>]*>\s*[^<\s]', rest, re.I)   # a <title> anywhere near the top (it may follow <desc> or <defs>)
         hidden = at.get('aria-hidden', '').lower() == 'true' or at.get('role', '').lower() in ('presentation', 'none')
         if not (named or hidden):          # role="img" on its own is not a name
             f.append('svg_no_name'); break

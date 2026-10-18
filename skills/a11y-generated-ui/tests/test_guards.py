@@ -139,3 +139,13 @@ def test_mcp_arguments_are_bounded_and_versions_negotiated():
             pass
     assert mcp_server.bounded({}, 'max_pages', 15, 1, 100) == 15
     assert '2099-01-01' not in mcp_server.SUPPORTED_VERSIONS
+
+
+def test_svg_title_may_follow_other_children_and_an_empty_title_is_not_a_name():
+    assert ratchet.static_flags('<svg width="10"><desc>d</desc><title>Chart</title><path/></svg>') == []
+    assert ratchet.static_flags('<svg><title></title><path/></svg>') == ['svg_no_name']
+
+
+def test_the_ci_example_turns_the_sandbox_off_with_a_warning():
+    y = (HERE / 'examples' / 'ci' / 'a11y-scan.yml').read_text()
+    assert "A11Y_NO_SANDBOX: '1'" in y and 'never copy this line' in y

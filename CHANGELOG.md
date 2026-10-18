@@ -11,6 +11,7 @@ Hardening after two independent reviews (Gemini 3.8 Flash and a second reviewer)
 - Baseline fails closed: a missing baseline needs `--update`, and items that could not be audited fail the run.
 - Folder scans confine served files to the folder (symlinks pointing outside are a 404).
 - MCP server: bounded arguments, at most `A11Y_MAX_JOBS` concurrent scans, process-group kill on timeout, protocol-version negotiation.
+- MCP server: scans stop after 30 minutes unless the operator sets `A11Y_JOB_TIMEOUT`. CI example sets `A11Y_NO_SANDBOX` (the sandbox is now on by default). `<svg>` names may follow `<desc>`/`<defs>` before the `<title>`.
 - Docs: modes and defaults spelled out, comparison corrected, detection-rate claim softened and cited, review-found limitations listed.
 
 - Scan a built folder, a URL, a sitemap or a crawl, or render components as fragments; axe-core, HTML_CodeSniffer and IBM Equal Access, plus static and Tab-walk checks.

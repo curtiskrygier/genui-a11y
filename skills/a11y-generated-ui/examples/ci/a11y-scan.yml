@@ -23,10 +23,11 @@ jobs:
           cd .a11y/skills/a11y-generated-ui/scripts && npm ci
       - name: Scan, score and gate
         # One scan: the JSON report is written to a file and the exit code gates the build.
-        # GitHub's Ubuntu runners ship Google Chrome, so nothing is installed. Scanning a local folder runs Chromium without its sandbox
-        # (the content is yours); set nothing extra. Exit 1 = score below the minimum, exit 3 = too few pages could be audited.
+        # GitHub's Ubuntu runners ship Google Chrome, so nothing is installed. Exit 1 = score below the minimum, exit 3 = too few pages could be audited.
         run: python3 .a11y/skills/a11y-generated-ui/scripts/ratchet.py --dir ./dist --score --json --min-score 80 > a11y-report.json
-        env: { CHROMIUM: /usr/bin/google-chrome }
+        # Chrome's sandbox usually cannot start on GitHub-hosted runners, so it is switched off here. That is acceptable only because the content scanned is
+        # your own build output; never copy this line into a job that scans other people's sites.
+        env: { CHROMIUM: /usr/bin/google-chrome, A11Y_NO_SANDBOX: '1' }
       - name: Summary
         if: always()
         run: |
