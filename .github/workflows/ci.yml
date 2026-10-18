@@ -1,0 +1,24 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
+      - run: pip install pytest
+      - run: cd skills/a11y-generated-ui/scripts && npm ci
+      - name: Tests (the engine and MCP tests need the installed engines and a browser)
+        run: cd skills/a11y-generated-ui && python3 -m pytest tests -q
+        env: { CHROMIUM: /usr/bin/google-chrome, A11Y_NO_SANDBOX: '1' }
+      - name: Smoke scan of the example items (the scan must run and find the planted defects)
+        run: |
+          cd skills/a11y-generated-ui
+          python3 scripts/ratchet.py --items examples/items.json --score --json > /tmp/report.json
+          python3 -c "import json; r=json.load(open('/tmp/report.json')); assert r['pages_scanned']==9 and r['score']<100 and any(c['id']=='click_not_keyboard' for c in r['failing_checks']), r['score']"
+        env: { CHROMIUM: /usr/bin/google-chrome, A11Y_NO_SANDBOX: '1' }
