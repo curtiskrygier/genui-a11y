@@ -309,6 +309,7 @@ def site_score(inputs, drop=frozenset()):
 
 
 def build_report(audit, items, label, requested=None):
+    FALLBACKS.clear()          # per report: the MCP server and tests are long-lived processes
     inputs, errored, info = {}, {}, {}
     for k, v in sorted(audit.items()):
         if 'err' in v:
