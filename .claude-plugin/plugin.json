@@ -1,7 +1,7 @@
 {
   "name": "a11y-generated-ui",
   "version": "0.1.0",
-  "description": "Audit accessibility of AI-generated or schema-driven UI: render every component, run axe-core with two more engines in the real host theme, add the static and keyboard checks axe misses, and keep it as a ratchet so new components start clean.",
+  "description": "Accessibility checks and balances for AI generated UI: render every component, run axe-core with two more engines in the real host theme, add the static and keyboard checks axe misses, score it with a fix order, and keep it as a ratchet so new components start clean.",
   "author": {
     "name": "Curtis Krygier"
   },

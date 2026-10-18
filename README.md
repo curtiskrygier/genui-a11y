@@ -1,6 +1,6 @@
 # genui-a11y: accessibility checks for AI-generated UI
 
-(a11y = accessibility.) The skill in this repo is `a11y-generated-ui`: a skill and small harness for auditing the accessibility of AI-generated or schema-driven UI, and for keeping it from regressing.
+Accessibility checks and balances for AI generated UI. (a11y = accessibility.) The skill in this repo is `a11y-generated-ui`: a skill and small harness for auditing the accessibility of AI-generated or schema-driven UI, and for keeping it from regressing.
 
 You render each component to an HTML fragment, and the harness:
 
