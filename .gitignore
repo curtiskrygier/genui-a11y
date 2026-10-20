@@ -2,3 +2,16 @@ node_modules
 __pycache__/
 .pytest_cache/
 *.audit.json
+
+# Never version: virtual environments, local secrets, scratch output
+.venv/
+venv/
+.env
+.env.*
+.dev.vars
+.wrangler/
+*.log
+.DS_Store
+*.bak
+*.local.yaml
+*.local.json
