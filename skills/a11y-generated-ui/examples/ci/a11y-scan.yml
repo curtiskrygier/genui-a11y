@@ -1,6 +1,6 @@
 # GitHub Actions: scan a built site on every pull request and fail the build below a minimum score.
 # Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (only a share of real issues): treat a pass as "no automated findings", not "accessible".
-# Not yet run end to end on a real repository: try it on a branch first.
+# Not yet run end to end on a real repository: try it on a branch first (the v0.1.1 tag must exist before it can install).
 name: Accessibility scan
 on:
   pull_request:
@@ -17,10 +17,9 @@ jobs:
       - name: Build the site
         run: npm ci && npm run build            # replace with your build; the output folder is scanned below
       - name: Install the scanner
-        # Pin to a full commit SHA of a commit you have read (or to a release tag once one exists), never the default branch: this code runs in your CI.
-        # TODO (maintainer): the old tag v0.1.0 points at pre-hardening code and must not be used. Cut a new tag (for example v0.1.1) at the commit you
-        # publish, then replace the placeholder below with that tag's full SHA.
-        env: { A11Y_REF: REPLACE_WITH_FULL_COMMIT_SHA }
+        # Pinned to a release tag, never the default branch: this code runs in your CI. The tag v0.1.1 is cut by the maintainer at release (see the
+        # CHANGELOG, "Release steps"). Do NOT use v0.1.0: it is pre-hardening code. For stricter pinning replace the tag with the full commit SHA of a commit you have read.
+        env: { A11Y_REF: v0.1.1 }
         run: |
           git clone https://github.com/curtiskrygier/genui-a11y.git .a11y
           git -C .a11y checkout --detach "$A11Y_REF"

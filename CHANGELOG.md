@@ -1,6 +1,22 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1 (unreleased)
+
+Release steps (maintainer):
+
+1. Merge `fix/roast-r2`, then cut the tag **v0.1.1** at the merge commit. `examples/ci/a11y-scan.yml` pins `A11Y_REF: v0.1.1`, so the CI example cannot install until this tag exists.
+2. Do **not** move or re-tag `v0.1.0`: it points at pre-hardening code. Say in its release notes that it is withdrawn and v0.1.1 replaces it.
+3. Replace "(unreleased)" with the release date.
+
+Fixes from the third roast review:
+
+- **Egress (Critical):** `0.0.0.0/8` (`0.0.0.0`, `0`, ...) was classified as a private range, so with `A11Y_ALLOW_PRIVATE=1` a scanned page could reach a localhost port through it (fetch, img, WebSocket, SharedWorker; 8 hits in the roast). It is now loopback, like `::`, in `lib.mjs`, `ratchet.py` and `mcp_server.py`. `tests/test_egress.py` now probes 0.0.0.0, 0, `[::]`, `[::1]`, `[::ffff:127.0.0.1]`, 127.0.0.2 and numeric forms with `A11Y_ALLOW_PRIVATE=1` set.
+- **CI template (Critical):** pins the tag `v0.1.1` instead of a placeholder; a test checks it parses and names the tag the CHANGELOG release steps cut.
+- `--json` with `--baseline` keeps stdout a single JSON document (the ratchet text goes to stderr).
+- A job timeout stops Chromium as well as node (Puppeteer starts Chromium in its own process group, so it is found by the run's own `--user-data-dir`); node also closes the browser on SIGTERM.
+- `--crosscheck` exits 1 when two or more engines agree on a finding (3 if the comparison failed); `[::1]` needs no `--confirm-permission`; a sitemap scan keeps only the sitemap's own host (others are listed and skipped); `crosscheck.mjs` honours `A11Y_NAV_TIMEOUT`; the engine prints the Chromium version; the MCP `scan_status` reports `progress`; `--tabwalk` prints how many composite widgets Tab never reached; plugin descriptions no longer imply three engines score. Removed the stray `scripts/t.mjs`.
+
+## 0.1.0 (superseded, see 0.1.1)
 
 Fixes from the second roast review (branch `fix/roast-r2`):
 

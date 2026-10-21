@@ -38,3 +38,8 @@ if show:
     s = {e: flag[e][show] for e in flag}
     print(f'\n{show}: item -> engines that flag it')
     for a in sorted(set().union(*s.values())): print('  ', f'{a:30s}', ','.join(e for e in s if a in s[e]))
+
+# Exit code: 1 when two or more engines flag the same item in the same category (very likely a real finding); 0 otherwise. ratchet.py --crosscheck passes it on.
+agreed = sum(1 for cat in ('contrast', 'name', 'other') for a in set().union(*(flag[e][cat] for e in flag)) if sum(a in flag[e][cat] for e in flag) >= 2)
+print(f'findings that >= 2 engines agree on: {agreed}')
+sys.exit(1 if agreed else 0)

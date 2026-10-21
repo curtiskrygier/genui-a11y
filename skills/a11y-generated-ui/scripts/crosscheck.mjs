@@ -38,7 +38,7 @@ for (const t of names) {
         const rep = await checker.check(document.querySelector(ROOT), ['IBM_Accessibility']);
         return rep.results.filter(r => r.value[0] === 'VIOLATION' && r.value[1] === 'FAIL').map(r => ({ rule: r.ruleId, msg: String(r.message || '').slice(0, 90) }));
       }, engine, ROOT),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 40000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), +(process.env.A11Y_NAV_TIMEOUT || 40000))),
     ]);
   } catch (e) { res.err = String(e.message).slice(0, 120); }
   out[t] = res;

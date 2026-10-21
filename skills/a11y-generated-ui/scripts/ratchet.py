@@ -27,6 +27,7 @@ import argparse, collections, functools, http.server, json, os, re, subprocess, 
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+LOCAL_NAMES = ('localhost', '127.0.0.1', '::1')     # the same set as lib.mjs: hosts that are this machine and need no permission flag
 
 
 def load_items(src):
@@ -130,7 +131,7 @@ def confined_handler(root):
 def check_public_host(host):
     """Refuse a host that resolves to a link-local or private address before this process fetches anything from it (the browser side has its own check in lib.mjs)."""
     import ipaddress, socket
-    if host in ('localhost', '127.0.0.1', '::1'):
+    if host in LOCAL_NAMES:
         return
     try:
         addrs = {ai[4][0].split('%')[0] for ai in socket.getaddrinfo(host, None)}
@@ -142,6 +143,8 @@ def check_public_host(host):
             ip = ip.ipv4_mapped
         if ip.is_link_local or host == 'metadata.google.internal':
             sys.exit(f'{host} resolves to a link-local address ({ad}): never scanned')
+        if ip.is_loopback or ip in ipaddress.ip_network('0.0.0.0/8') or ip.is_unspecified:      # 0.0.0.0, "0", ::, 127.x other than 127.0.0.1: the kernel routes these to this machine, so ALLOW_PRIVATE never opens them
+            sys.exit(f'{host} resolves to this machine ({ad}) under a name other than localhost / 127.0.0.1 / ::1: blocked')
         if (ip.is_private or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_reserved) and os.environ.get('A11Y_ALLOW_PRIVATE') != '1':
             sys.exit(f'{host} resolves to a private or special address ({ad}): blocked. Set A11Y_ALLOW_PRIVATE=1 to scan your own internal hosts.')
 
@@ -160,6 +163,40 @@ class JobTimeout(Exception):
     """The engine script ran past A11Y_JOB_TIMEOUT. Whatever it had already written to audit.json is kept."""
 
 
+def stop_run(p, profile):
+    """Stop node and everything it started. Puppeteer launches Chromium detached (its own process group), so killing node, or node's group, leaves
+    the browser running; it is found by the run's own --user-data-dir instead. SIGTERM first (node closes the browser), then SIGKILL."""
+    import signal, time
+
+    def browsers():
+        out = []
+        for d in Path('/proc').glob('[0-9]*'):
+            try:
+                if profile in (d / 'cmdline').read_bytes().decode('utf8', 'replace'):
+                    out.append(int(d.name))
+            except OSError:
+                pass
+        return out
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+        deadline = time.time() + 3
+        while time.time() < deadline and p.poll() is None:
+            time.sleep(0.05)
+        for pid in browsers():
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        if sig == signal.SIGTERM:
+            time.sleep(0.5)
+            if not browsers() and p.poll() is not None:
+                return
+    p.wait()
+
+
 def node(script, td, *extra):
     """Run an engine script. Its progress lines (stderr) are shown as they happen. A script that runs past A11Y_JOB_TIMEOUT seconds
     (default 7200) is stopped and JobTimeout is raised; audit.mjs writes audit.json as it goes, so the pages done so far are not lost."""
@@ -167,7 +204,9 @@ def node(script, td, *extra):
     if not (HERE / 'node_modules').exists() and 'NODE_PATH' not in env:
         print(f'no node_modules next to {HERE}: run `npm ci` there once', file=sys.stderr)
         sys.exit(3)      # 3 = the audit could not run; 1 is reserved for 'the score or the ratchet failed'
-    p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env)
+    profile = str(Path(td) / 'chrome-profile')      # unique to this run: the Chromium that node starts carries it, so it can be found and stopped
+    env['A11Y_USER_DATA_DIR'] = profile
+    p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env, start_new_session=True)
     tail, chunks = collections.deque(maxlen=12), []
 
     def pump_err():
@@ -184,13 +223,13 @@ def node(script, td, *extra):
     try:
         p.wait(timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)))
     except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
+        stop_run(p, profile)
         for th in threads:
             th.join(2)
         raise JobTimeout(script)
     for th in threads:
         th.join(5)
+    stop_run(p, profile)        # a normal exit leaves nothing behind either
     out = ''.join(chunks)
     if p.returncode:
         msg = next((ln for ln in reversed(tail) if re.search(r'\bError: ', ln)), None)   # the one-line reason, not the stack trace
@@ -469,7 +508,7 @@ def main():
         sm = urllib.parse.urlparse(a.sitemap)
         if sm.scheme not in ('http', 'https') or not sm.hostname:
             sys.exit('--sitemap must be an http(s) URL')
-        if sm.hostname not in ('localhost', '127.0.0.1', '::1') and not a.confirm_permission:
+        if sm.hostname not in LOCAL_NAMES and not a.confirm_permission:
             sys.exit(f'refusing to fetch the sitemap from {sm.hostname}: scan only sites you own or have permission to test, and say so with --confirm-permission')
         check_public_host(sm.hostname)
 
@@ -478,13 +517,17 @@ def main():
                 return None             # a redirect could point the fetch at an address the checks above never saw
         with urllib.request.build_opener(NoRedirect).open(a.sitemap, timeout=30) as resp:
             xml = resp.read(5_000_000).decode('utf8', 'replace')
-        listed.extend(re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml))
+        locs = re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml)
+        listed.extend(u for u in locs if urllib.parse.urlparse(u).hostname == sm.hostname)      # one --confirm-permission covers the sitemap's own host only
+        other = sorted({urllib.parse.urlparse(u).hostname or '?' for u in locs} - {sm.hostname})
+        if other:
+            print(f'skipped {len(locs) - len(listed)} sitemap URL(s) on other host(s) ({", ".join(other[:5])}): permission was for {sm.hostname}. Scan them with their own --urls run.', file=sys.stderr)
     if listed:
         urls = keyed(listed)
     if live:
         hosts = {urllib.parse.urlparse(u).hostname for u in ([a.url] if a.url else []) + list(urls.values())}
-        if hosts - {'localhost', '127.0.0.1'} and not a.confirm_permission:
-            sys.exit('refusing to scan ' + ', '.join(sorted(h for h in hosts - {'localhost', '127.0.0.1'} if h)) + ': scan only sites you own or have permission to test, and say so with --confirm-permission')
+        if hosts - set(LOCAL_NAMES) and not a.confirm_permission:
+            sys.exit('refusing to scan ' + ', '.join(sorted(h for h in hosts - set(LOCAL_NAMES) if h)) + ': scan only sites you own or have permission to test, and say so with --confirm-permission')
     if a.static:
         c = collections.defaultdict(list)
         for k, h in sorted(items.items()):
@@ -516,7 +559,7 @@ def main():
             tw = json.loads((td / 'tabwalk.json').read_text())
             cur = {k: v['findings'] for k, v in tw.items() if v.get('findings')}
             tot_ = collections.Counter(rr for v in cur.values() for rr in v)
-            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}')
+            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}; composite widgets Tab never reached (not reported as findings): {sum(v.get("composite_unreached", 0) for v in tw.values())}')
             for k, v in sorted(tw.items()):
                 for d in v.get('detail', [])[:3]:
                     print('  ', k, d[:140])
@@ -527,7 +570,7 @@ def main():
                 print(node('crosscheck.mjs', td, a.theme, eng, a.only))
             r = subprocess.run([sys.executable, str(HERE / 'crosscheck_report.py'), str(td), '--theme', a.theme], capture_output=True, text=True)
             print(r.stdout or r.stderr)
-            return 0
+            return 1 if r.returncode == 1 else 3 if r.returncode else 0      # 1: engines agree on a finding; 3: the comparison itself failed
         timed_out = False
         try:
             print(node('audit.mjs', td, a.theme), file=sys.stderr)    # progress goes to stderr so that --json output stays pure JSON
@@ -562,12 +605,16 @@ def main():
         rc = score_mode(a, audit, items, requested)
         if not a.baseline:
             return rc
-        print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=sys.stderr if a.json else sys.stdout)
-        return max(rc, ratchet_mode(a, audit, cur, errors, missing, pairs))
+        out = sys.stderr if a.json else sys.stdout      # --json: stdout stays one JSON document, so the ratchet's text goes to stderr
+        print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
+        return max(rc, ratchet_mode(a, audit, cur, errors, missing, pairs, out))
     return ratchet_mode(a, audit, cur, errors, missing, pairs)
 
 
-def ratchet_mode(a, audit, cur, errors, missing, pairs):
+def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None):
+    out = out or sys.stdout
+    import builtins
+    print = functools.partial(builtins.print, file=out)
     print(f"{len(audit)} items audited ({a.theme} page), {len(errors)} errors; axe violations in {len(cur['axe'])} items, static flags in {len(cur['static'])}")
     if a.report or not a.baseline:
         c = collections.Counter(r for rules in cur['axe'].values() for r in rules)
