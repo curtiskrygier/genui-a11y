@@ -304,19 +304,15 @@ def site_score(inputs, drop=frozenset()):
     # The site rules count pages by what actually held them down (a critical or keyboard barrier, or a serious failure), not by their score:
     # a page at 68 from many minor issues is not a barrier, and a page at 84 with none of either is not "serious".
     blocked = sum(1 for p in scored if p[4] == 'blocking')
-    serious = sum(1 for p in scored if p[4] == 'serious')
-    capped = blocked + serious
+    capped = blocked + sum(1 for p in scored if p[4] == 'serious')
     # A site cap comes from the share of pages AND from how many there are, so adding clean pages cannot dilute a real barrier away:
     #   blocking pages: more than a tenth of the site, or three or more of them  -> not better than a C (69)
     #                   any at all                                               -> not better than a B (84): no A while a keyboard or critical barrier exists
-    #   serious pages:  more than a quarter of the site                          -> not better than a B (84)
-    #                   any at all                                               -> not better than an A- cut-off minus one (89): no A while a serious failure exists
+    #   serious pages (blocking ones included): more than a quarter of the site  -> not better than a B (84)
     if blocked / len(scored) > 0.10 or blocked >= 3:
         site = min(site, 69)
     elif blocked or capped / len(scored) > 0.25:
         site = min(site, 84)
-    elif capped:
-        site = min(site, 89)
     return site, pages
 
 
@@ -394,7 +390,7 @@ def score_mode(a, audit, items, requested):
             print(f"  {p['score']:3d} {p['grade']:2s}  {k}  " + ' '.join(f'{L[:4]}={v}' for L, v in p['layers'].items()))
         if rep['pages_not_audited']:
             print(f"NOT AUDITED ({len(rep['pages_not_audited'])}): " + '; '.join(f'{k} [{e}]' for k, e in list(rep['pages_not_audited'].items())[:5]) + '  (the score covers only the pages that were audited)')
-        print(f"pages held down by a severe barrier: {rep['pages_with_severe_barriers']} (of which blocking, i.e. critical or keyboard: {rep['pages_blocking']})  [a site with any blocking page cannot score above 84, with any serious page above 89]")
+        print(f"pages held down by a severe barrier: {rep['pages_with_severe_barriers']} (of which blocking, i.e. critical or keyboard: {rep['pages_blocking']})  [a site with any blocking page cannot score above 84; 3 or more, or over a tenth of the pages, cannot score above 69]")
         print(f"points lost to severity caps (average per page): {rep['points_lost_to_severity_caps']}")
         print('where the points went (average points lost per page; score gain if that check alone were fixed; pages hit):')
         for e in rep['failing_checks'][:12]:

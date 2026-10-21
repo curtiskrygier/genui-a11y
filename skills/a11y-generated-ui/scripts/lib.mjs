@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { startVettingProxy } from './proxy.mjs';
 export const DARK = process.env.A11Y_DARK_CLASS || 'dark';   // body class a host uses for its dark theme (fragment mode)
 const DARK_ATTR = process.env.A11Y_DARK_ATTR || '';          // live mode, for sites that switch theme with an attribute, e.g. data-theme=dark (otherwise prefers-color-scheme is used)
 const DARK_STORE = process.env.A11Y_DARK_STORAGE || '';      // live mode, for sites that remember the theme in localStorage, e.g. a2ui-theme=dark
@@ -16,7 +17,10 @@ const DARK_STORE = process.env.A11Y_DARK_STORAGE || '';      // live mode, for s
 //   * loopback is reachable only at the exact origin(s) being scanned (a local build on 127.0.0.1:8777 may load its own files, but a page on a remote
 //     host cannot probe your localhost, and a scan of one local port cannot reach another);
 //   * a public hostname that resolves to loopback is blocked (a rebinding trick);
-//   * only http, https, data, blob and about URLs are allowed; WebSockets and file/ftp URLs are blocked, and service workers are bypassed.
+//   * only http, https, data, blob and about URLs are allowed; file/ftp URLs are blocked, and service workers are bypassed;
+//   * ALL browser TCP traffic, including WebSockets (ws/wss, which have no CORS) and SharedWorker / Worker fetches, goes through a local vetting proxy
+//     (proxy.mjs) that applies the rules above to every connection and connects to the address it checked. WebRTC (UDP) is disabled with
+//     --webrtc-ip-handling-policy=disable_non_proxied_udp and QUIC with --disable-quic. See the README for what is and is not covered.
 // Addresses are parsed to bytes, and every form that embeds an IPv4 address (IPv4-mapped, NAT64, 6to4, IPv4-compatible) is classified by the IPv4
 // inside it. Anything that cannot be parsed is treated as not public.
 // Each target host is resolved once here and pinned for the browser (--host-resolver-rules), so the address checked is the address used.
@@ -123,18 +127,24 @@ export async function launchBrowser(puppeteer, d) {
   const hosts = hostsOf(d);
   declareTargets(d);
   const args = [...BASE_ARGS];
-  const rules = [];
-  for (const h of hosts) {
-    const addrs = await vetHost(h);
-    const v4 = addrs.find(x => net.isIPv4(x));
-    if (!isLocalName(h) && !net.isIP(h) && v4) rules.push('MAP ' + h + ' ' + v4);
-  }
-  if (rules.length) args.push('--host-resolver-rules=' + rules.join(','));
+  for (const h of hosts) await vetHost(h);           // refuse a bad target before anything starts (the proxy resolves again from this cache, so the address checked is the address used)
+  // ALL browser egress goes through a local vetting proxy (proxy.mjs). <-loopback> removes the browser's built-in exemption for localhost, so even
+  // 127.0.0.1 traffic is checked. This is what covers WebSockets, SharedWorkers and ServiceWorkers, which the in-page interception cannot see.
+  // Fragment mode has no live pages, so the proxy there refuses everything.
+  const proxy = await startVettingProxy({ vetUrl, vetHost, blockAll: !d.urls, log: (m) => console.error('scan proxy: ' + m) });
+  args.push('--proxy-server=http://127.0.0.1:' + proxy.port, '--proxy-bypass-list=<-loopback>');
+  // UDP does not go through an HTTP proxy. WebRTC (STUN/ICE) is told to use no UDP that is not proxied (measured: a STUN probe to a local UDP port sent 5
+  // datagrams without this flag and 0 with it; --force-webrtc-ip-handling-policy did NOT stop it). WebTransport (QUIC) is removed in prepare().
+  args.push('--webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-quic');
   const noSandbox = process.env.A11Y_NO_SANDBOX === '1';
   if (noSandbox) args.push('--no-sandbox');
   try {
-    return await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
+    const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
+    const close = browser.close.bind(browser);
+    browser.close = async () => { try { await close(); } finally { proxy.close(); } };
+    return browser;
   } catch (e) {
+    proxy.close();
     throw new Error(String(e.message).slice(0, 300) + (noSandbox ? '' : '\n(Chromium could not start with its sandbox. In a container or CI set A11Y_NO_SANDBOX=1, and only when scanning content you trust.)'));
   }
 }
@@ -144,18 +154,20 @@ export const namesOf = (d) => Object.keys(d.urls || d.html);
 export const rootSel = (d) => (d.urls ? 'body' : 'main');
 export async function prepare(page, d) {
   await page.setViewport({ width: 900, height: 700 });
+  // WebTransport speaks QUIC over UDP, straight from the browser, so the proxy never sees it and no Chromium flag turns it off (measured). Remove it from
+  // every page and iframe. Not covered: a WebTransport opened from inside a Worker (see the README).
+  await page.evaluateOnNewDocument(() => { try { Object.defineProperty(window, 'WebTransport', { value: undefined, configurable: false, writable: false }); } catch (e) {} });
   if (d.urls) {
     await page.setRequestInterception(true);
     page.on('request', async (r) => {
       try { await vetUrl(r.url()); await r.continue(); }
       catch (e) { try { await r.abort('blockedbyclient'); } catch (_) {} }
     });
-    try {   // the interception above cannot see WebSockets or service-worker traffic: block both at the protocol level
+    try {   // service workers would answer from their own cache and fetch through their own path: bypass them (WebSockets and workers are covered by the proxy, not here)
       const c = await page.createCDPSession();
       await c.send('Network.enable');
       await c.send('Network.setBypassServiceWorker', { bypass: true });
-      await c.send('Network.setBlockedURLs', { urls: ['ws://*', 'wss://*', 'ftp://*', 'file://*'] });
-    } catch (e) { console.error('warning: could not apply the WebSocket and service-worker block: ' + String(e.message).slice(0, 120)); }
+    } catch (e) { console.error('warning: could not bypass service workers: ' + String(e.message).slice(0, 120)); }
   } else {
     await page.setRequestInterception(true);
     page.on('request', r => (r.url().startsWith('data:') || r.url().startsWith('about:')) ? r.continue() : r.abort());   // offline, deterministic

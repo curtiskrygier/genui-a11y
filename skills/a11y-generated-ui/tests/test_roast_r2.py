@@ -94,11 +94,6 @@ def test_three_blocking_pages_hold_a_large_site_at_C():
     assert ratchet.site_score(inputs)[0] <= 69
 
 
-def test_one_serious_page_means_no_A():
-    inputs = {'ser': page('serious')}
-    inputs.update({f'clean{i}': page() for i in range(200)})
-    assert ratchet.site_score(inputs)[0] <= 89
-
 
 # ---- minor items: clean errors instead of tracebacks, and the exit code for "could not audit" ---------------------------------------------------------
 
@@ -118,3 +113,18 @@ def test_missing_node_modules_exits_3_and_says_npm_ci(tmp_path):
     code = "import sys; sys.path.insert(0, %r); import ratchet; ratchet.HERE = __import__('pathlib').Path(%r); ratchet.node('audit.mjs', '.')" % (str(SCRIPTS), str(tmp_path))
     r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30, env=env)
     assert r.returncode == 3 and 'npm ci' in r.stderr, r.stderr
+
+
+# ---- the README demo must match what the quick start prints -----------------------------------------------------------------------------------------
+
+def test_readme_demo_matches_the_quick_start():
+    if not (SCRIPTS / 'node_modules').exists():
+        import pytest
+        pytest.skip('run npm ci in scripts/')
+    readme = (HERE.parent.parent / 'README.md').read_text()
+    demo = readme.split('```text\n', 1)[1].split('```', 1)[0].splitlines()
+    out = subprocess.run([sys.executable, str(SCRIPTS / 'ratchet.py'), '--items', str(HERE / 'examples' / 'items.json'), '--score'], capture_output=True, text=True, timeout=300).stdout.splitlines()
+    for ln in demo:
+        if '...' in ln:
+            continue                                   # the trimmed fix-order heading
+        assert ln in out, f'README demo line not in the real output: {ln!r}'

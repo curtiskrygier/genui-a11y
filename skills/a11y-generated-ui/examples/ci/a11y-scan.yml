@@ -17,9 +17,13 @@ jobs:
       - name: Build the site
         run: npm ci && npm run build            # replace with your build; the output folder is scanned below
       - name: Install the scanner
-        # Pin to a release tag (or a full commit SHA), never the default branch: this code runs in your CI.
+        # Pin to a full commit SHA of a commit you have read (or to a release tag once one exists), never the default branch: this code runs in your CI.
+        # TODO (maintainer): the old tag v0.1.0 points at pre-hardening code and must not be used. Cut a new tag (for example v0.1.1) at the commit you
+        # publish, then replace the placeholder below with that tag's full SHA.
+        env: { A11Y_REF: REPLACE_WITH_FULL_COMMIT_SHA }
         run: |
-          git clone --depth 1 --branch v0.1.0 https://github.com/curtiskrygier/genui-a11y.git .a11y
+          git clone https://github.com/curtiskrygier/genui-a11y.git .a11y
+          git -C .a11y checkout --detach "$A11Y_REF"
           cd .a11y/skills/a11y-generated-ui/scripts && npm ci
       - name: Scan, score and gate
         # One scan: the JSON report is written to a file and the exit code gates the build.

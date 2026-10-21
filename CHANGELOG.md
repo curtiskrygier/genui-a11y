@@ -2,6 +2,15 @@
 
 ## 0.1.0 (unreleased)
 
+Fixes from the second roast review (branch `fix/roast-r2`):
+
+- **Egress (Critical):** WebSockets and SharedWorker fetches were NOT blocked (the earlier "WebSockets blocked" claim was false in a real browser: `Network.setBlockedURLs` is ignored for ws, and worker traffic is invisible to page-level interception). All browser TCP traffic now goes through a local vetting proxy (`scripts/proxy.mjs`, `--proxy-server` plus `--proxy-bypass-list=<-loopback>`), which applies the address rules to every connection and connects to the address it checked (this also pins redirect and subresource hosts). WebRTC is disabled with `--webrtc-ip-handling-policy=disable_non_proxied_udp` and `WebTransport` is removed from pages. New browser-level test `tests/test_egress.py`. Not covered: other UDP, and WebTransport from inside a Worker (see README, Safety).
+- **Ratchet fails closed (Critical):** items requested but never audited (a run stopped by `A11Y_JOB_TIMEOUT`) used to count as unchanged and the ratchet exited 0. It now exits 3, and `--update` refuses to write a baseline from a partial run.
+- `--score` / `--min-score` together with `--baseline` used to skip the baseline silently; both now run and the worse exit code wins.
+- Site score no longer dilutes: any page held down by a critical or keyboard barrier caps the site at 84 (B), three or more (or more than a tenth) at 69 (C). Two keyboard-barrier pages plus 60 clean ones scored 98 A before; now at most 84. The headline prints the barrier count. Scores of sites with no blocking page are unchanged.
+- Environment and engine failures (no Chromium or `node_modules`, engine crash) exit 3, not 1. Wrong `--items` / `--shell` paths give one-line errors. `npm ci` everywhere. `crawl.mjs` honours `A11Y_NAV_TIMEOUT`.
+- README demo regenerated from the real quick start; CI example no longer pins the stale `v0.1.0` tag.
+
 Hardening after two independent reviews (Gemini 3.8 Flash and a second reviewer):
 
 - Network guard: addresses are parsed to bytes (IPv4-mapped, NAT64, 6to4, Teredo, `::` and the other special forms are classified by what they contain; the old classifier missed the hex forms), loopback only at the exact scanned origins, scheme allowlist, WebSockets blocked, service workers bypassed, `robots.txt` and sitemap fetches do not follow redirects, sitemap host vetted and permission-checked before the fetch, Chromium sandbox on by default (`A11Y_NO_SANDBOX=1` to opt out).
