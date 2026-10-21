@@ -2,7 +2,7 @@
 
 **Accessibility regression checks for generated and template-built UI.** Render your components, audit them in the theme they will actually sit in, record what is already broken, and fail the build when something new breaks.
 
-(a11y = accessibility.) Accessibility checks and balances for AI generated UI. The main skill in this repo is called `a11y-generated-ui`; a second skill, [`roast-panel`](#roast-the-result-before-you-publish-it), reviews its results before you publish them.
+(a11y = accessibility.) Accessibility checks and balances for AI generated UI. The skill in this repo is called `a11y-generated-ui`.
 
 **Status:** early (0.1.0), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
 
@@ -142,15 +142,6 @@ What it has been checked against (author-reported: the raw captures and comparis
 The two tools rank pages the same way (Spearman 0.94 across the W3C "before" pages, 0.79 across the catalogue's), and both score the fixed demo well above the broken one. They disagree on level; this is stricter by design. The W3C figures were measured on captured page source, because the live site answers Lighthouse with a redirect page.
 
 That comparison also caught a real gap: Lighthouse flagged `td-has-header` on 14 pages where an earlier version of this scanner reported nothing, because axe marks some WCAG rules experimental and a run that selects rules by tag never executes them. The same site then scored 69 instead of 94 (one empty `<th>` in a shared template). The scanner now switches on every experimental rule that carries a WCAG tag ([lesson 14](skills/a11y-generated-ui/references/lessons.md)).
-
-## Roast the result before you publish it
-
-The repo has a second skill, [`roast-panel`](skills/roast-panel/SKILL.md): an adversarial review panel to run over an audit,
-a fix or a score before you call it done. Named reviewers each attack it from one angle (screen-reader user, keyboard-only
-user, low-vision reader, motion-sensitive viewer, score sceptic, grumpy maintainer, and a security researcher when the change
-crawls or serves anything). Every finding is verified by running something or marked unverified, gaps are fixed and roasted
-again in rounds, and the roast is published next to the score as `ROAST-<date>-<topic>.md`. It exists because every scan agreed
-on a 94 that was really 69, and on a keyboard fix whose focus ring nobody could see.
 
 ## Alternatives
 

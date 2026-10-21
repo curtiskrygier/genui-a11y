@@ -2,8 +2,6 @@
 
 ## 0.1.0 (unreleased)
 
-- New skill `roast-panel`: an adversarial review panel (screen-reader, keyboard, low-vision, motion, score sceptic, maintainer, security) that verifies each finding or marks it unverified, fixes and re-roasts in rounds, and writes `ROAST-<date>-<topic>.md` next to the score.
-
 Hardening after two independent reviews (Gemini 3.8 Flash and a second reviewer):
 
 - Network guard: addresses are parsed to bytes (IPv4-mapped, NAT64, 6to4, Teredo, `::` and the other special forms are classified by what they contain; the old classifier missed the hex forms), loopback only at the exact scanned origins, scheme allowlist, WebSockets blocked, service workers bypassed, `robots.txt` and sitemap fetches do not follow redirects, sitemap host vetted and permission-checked before the fetch, Chromium sandbox on by default (`A11Y_NO_SANDBOX=1` to opt out).
