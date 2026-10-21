@@ -16,6 +16,8 @@
     "generated-ui",
     "genui",
     "ratchet",
+    "red-team",
+    "review",
     "wcag"
   ],
   "repository": "https://github.com/curtiskrygier/genui-a11y"
