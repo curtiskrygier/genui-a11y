@@ -8,7 +8,7 @@ SCRIPTS = HERE / 'scripts'
 ITEMS = HERE / 'examples' / 'items.json'
 sys.path.insert(0, str(SCRIPTS))
 HAVE_BROWSER = (SCRIPTS / 'node_modules').exists()
-browser = pytest.mark.skipif(not HAVE_BROWSER, reason='run npm install in scripts/')
+browser = pytest.mark.skipif(not HAVE_BROWSER, reason='run npm ci in scripts/')
 
 
 def run(*args):

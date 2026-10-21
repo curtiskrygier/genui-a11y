@@ -11,7 +11,7 @@ description: >-
   UI, or when adding components to a catalog. Not a substitute for a screen
   reader or disabled-user testing.
 license: MIT
-compatibility: Needs Python 3, Node 20+ and a Chromium; npm install in scripts/ once.
+compatibility: Needs Python 3, Node 20+ and a Chromium; npm ci in scripts/ once.
 ---
 
 # a11y-generated-ui
@@ -46,7 +46,7 @@ A method and a small harness for one problem: UI that an agent generates tends t
 ## Commands
 
 ```
-cd scripts && npm install                    # once: axe-core, HTML_CodeSniffer, IBM Equal Access, puppeteer-core (needs Chromium; set CHROMIUM=/path if not /usr/bin/chromium)
+cd scripts && npm ci                    # once: axe-core, HTML_CodeSniffer, IBM Equal Access, puppeteer-core (needs Chromium; set CHROMIUM=/path if not /usr/bin/chromium)
 python3 ratchet.py --items items.json --shell host.css --baseline baseline.json            # ratchet
 python3 ratchet.py --items items.json --shell host.css --baseline baseline.json --update   # lock in a fixing batch
 python3 ratchet.py --items items.json --shell host.css --theme dark --baseline baseline-dark.json
@@ -70,7 +70,7 @@ python3 ratchet.py --dir ./dist --score --json              # full report for sc
 
 ### As an MCP tool
 
-`scripts/mcp_server.py` is a local stdio MCP server (standard library only) so an agent can run scans itself. Installed as a Claude Code plugin it registers as `a11y-scan` (see `.mcp.json`); elsewhere run `python3 scripts/mcp_server.py` as a stdio server. Run `npm install` in `scripts/` first.
+`scripts/mcp_server.py` is a local stdio MCP server (standard library only) so an agent can run scans itself. Installed as a Claude Code plugin it registers as `a11y-scan` (see `.mcp.json`); elsewhere run `python3 scripts/mcp_server.py` as a stdio server. Run `npm ci` in `scripts/` first.
 
 Tools: `scan_start` (a URL or a built folder, with `crawl`, `max_pages`, `depth`, `theme`, `confirm_permission`) returns a job id at once; `scan_status`; `scan_result` (score, grade, layers, worst pages, failing checks, the coverage note); `explain_check`. Scans take minutes, hence the job. Localhost and local folders scan freely; any other host needs `confirm_permission` in the call and `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server (an agent cannot grant itself that), and link-local and cloud-metadata addresses are never scanned. When you report a result, include its coverage note.
 

@@ -42,7 +42,7 @@ while (queue.length && seen.size < MAX) {
   if (seen.has(url)) continue;
   if (!allowed(url)) { skipped.push(url + '  (robots.txt)'); continue; }
   try {
-    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: 40000 });
+    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: +(process.env.A11Y_NAV_TIMEOUT || 40000) });
     if (landedOnLinkLocal(page.url())) { skipped.push(url + '  (redirected to a link-local address)'); continue; }
     const type = (resp && resp.headers()['content-type']) || '';
     if (!/html/i.test(type)) continue;
