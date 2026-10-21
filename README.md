@@ -4,7 +4,7 @@
 
 (a11y = accessibility.) Accessibility checks and balances for AI generated UI. The skill in this repo is called `a11y-generated-ui`.
 
-**Status:** early (0.1.0), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
+**Status:** early (0.1.1), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
 
 [Quick start](#quick-start) · [Use with an agent](#use-with-an-agent-mcp) · [Options](#options-and-exit-codes) · [What it does not do](#what-it-does-not-do) · [How far to trust the score](#how-far-to-trust-the-score) · [Alternatives](#alternatives) · [Safety](#safety-defaults)
 
@@ -128,7 +128,7 @@ Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a
 - The static checks are regexes over HTML. They miss some barriers (a listener added by script) and flag some non-barriers. A flag is a prompt to look; a clean result is not proof.
 - It does not cover every WCAG 2.2 success criterion. Selecting A and AA tags in axe is not criterion-level coverage.
 - The Tab walk reports heuristics (focus-style differences, a stop limit of 60). It does not prove a keyboard trap or a missing focus indicator. It does not report a clickable `<span>` or a CSS-only radio tab set that Tab never reaches (it prints how many composite widgets it never reached, not which are defective).
-- Known limitations: the engines were tested on Chromium 153 (the version in use is printed as `browser: ...` on stderr; other versions are untested); the MCP `scan_status` progress shows pages done, not a time estimate; the vetting proxy has no connect timeout and no authentication (it listens on 127.0.0.1 only); in live mode Chromium's own background requests go through the proxy to public hosts.
+- Known limitations: the engines were tested on Chromium 153 (the version in use is printed as `browser: ...` on stderr; other versions are untested); the MCP `scan_status` progress shows pages done, not a time estimate; the vetting proxy has no authentication (it listens on 127.0.0.1 only; it times out a connect after 10 s and an idle socket after 60 s, `A11Y_PROXY_CONNECT_TIMEOUT` and `A11Y_PROXY_IDLE_TIMEOUT`); in live mode Chromium's own background requests go through the proxy to public hosts.
 - Performance, SEO and best-practice audits are out of scope.
 
 ## How far to trust the score

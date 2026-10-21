@@ -8,6 +8,12 @@ Release steps (maintainer):
 2. Do **not** move or re-tag `v0.1.0`: it points at pre-hardening code. Say in its release notes that it is withdrawn and v0.1.1 replaces it.
 3. Replace "(unreleased)" with the release date.
 
+Fixes from the fourth roast review:
+
+- **One slow request no longer holds the run.** The proxy tracks every socket, destroys the upstream when the browser side closes, drops a page's sockets before the next page and at exit, and times out a connect (10 s) and an idle socket (60 s). The engines exit explicitly. A page now loads until the DOM is parsed (`A11Y_NAV_TIMEOUT`, else "NOT AUDITED: Navigation timeout") and then gets `A11Y_IDLE_TIMEOUT` (15 s) to go network-idle; a page with an SSE stream or a request that is never answered is audited as it stands and listed as "never went idle". The report names pages that hit the deadline, and says "the engine did not exit" instead of a false STOPPED when every page was audited.
+- A crawl that runs past `A11Y_JOB_TIMEOUT` exits 3 with a message, not a traceback. An MCP job timeout now SIGTERMs ratchet, which stops its node and Chromium; no process of the job survives. "the score below" is not printed in ratchet mode.
+- The quick start prints no "blocked google.com" lines (Chromium background features are off; browser-internal blocks are not logged in fragment mode). Loopback origins are compared with the port spelled out, so a scan on :80 no longer opens :443 or the reverse. One version string (0.1.1) everywhere, with a test.
+
 Fixes from the third roast review:
 
 - **Egress (Critical):** `0.0.0.0/8` (`0.0.0.0`, `0`, ...) was classified as a private range, so with `A11Y_ALLOW_PRIVATE=1` a scanned page could reach a localhost port through it (fetch, img, WebSocket, SharedWorker; 8 hits in the roast). It is now loopback, like `::`, in `lib.mjs`, `ratchet.py` and `mcp_server.py`. `tests/test_egress.py` now probes 0.0.0.0, 0, `[::]`, `[::1]`, `[::ffff:127.0.0.1]`, 127.0.0.2 and numeric forms with `A11Y_ALLOW_PRIVATE=1` set.

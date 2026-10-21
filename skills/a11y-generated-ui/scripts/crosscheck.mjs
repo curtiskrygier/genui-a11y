@@ -46,3 +46,4 @@ for (const t of names) {
 await b.close();
 fs.writeFileSync(dir + '/' + engine + '-' + theme + '.json', JSON.stringify(out));
 console.log(engine + ' ' + theme + ': ' + Object.keys(out).length + ' items, ' + Object.values(out).filter(v => v.err).length + ' errors');
+process.exit(0);

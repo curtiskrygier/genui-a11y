@@ -77,7 +77,10 @@ export function classify(ip) {
   if (b[0] === 0x01 && zero(1, 8)) return 'private';                          // 100::/64 (discard)
   return 'public';
 }
-let LOCAL_ORIGINS = new Set();   // host:port of the scan targets that are on this machine
+let LOCAL_ORIGINS = new Set();   // host:port of the scan targets that are on this machine (the port is always spelled out: 80 and 443 are different ports)
+const effPort = (u) => u.port || (u.protocol === 'https:' ? '443' : '80');   // URL.host drops a default port, so http://h/ and https://h:443/ would otherwise look the same as, or differ from, the wrong thing
+const hostKey = (u) => bare(u.hostname) + ':' + effPort(u);
+let activeProxy = null;          // the vetting proxy of the running browser, so a page's sockets can be torn down when the page is done
 const vetted = new Map();        // hostname -> Promise<string[]> of addresses, or a rejection
 export function vetHost(hostname) {
   const h = bare(hostname);
@@ -102,7 +105,7 @@ export async function vetUrl(raw) {
   if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return;
   if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme ' + u.protocol + ' is not allowed');
   if (isLocalName(u.hostname)) {
-    if (!LOCAL_ORIGINS.has(u.host)) throw new Error('loopback ' + u.host + ' is not one of the origins being scanned');
+    if (!LOCAL_ORIGINS.has(hostKey(u))) throw new Error('loopback ' + u.host + ' is not one of the origins being scanned');
     return;
   }
   await vetHost(u.hostname);
@@ -112,16 +115,20 @@ export function landedOnLinkLocal(u) {
   try { const h = bare(new URL(u).hostname); return classify(h) === 'link-local' || h === 'metadata.google.internal'; } catch { return false; }
 }
 const hostsOf = (d) => (d && d.urls ? [...new Set(Object.values(d.urls).map(u => new URL(u).hostname))] : []);
-const originsOf = (d) => (d && d.urls ? [...new Set(Object.values(d.urls).map(u => new URL(u).host))] : []);
+const originsOf = (d) => (d && d.urls ? [...new Set(Object.values(d.urls).map(u => new URL(u)))].map(u => ({ name: bare(u.hostname), key: hostKey(u) })) : []);
 
 // ---- Browser launch --------------------------------------------------------------------------------------------------------------------------
 // The Chromium sandbox is ON unless you set A11Y_NO_SANDBOX=1. Containers and some CI images cannot create it, and then the launch fails with a message
 // that says so; turn it off only for content you trust, because a page that escapes an unsandboxed Chromium runs as you.
-const BASE_ARGS = ['--disable-gpu', '--mute-audio', '--use-gl=swiftshader'];
+// The second line switches off Chromium's own background traffic (component and safe-browsing updates, pings, domain reliability, sync), which the proxy
+// would otherwise refuse and log as "blocked google.com" on every start. None of it is part of the page being scanned.
+const BASE_ARGS = ['--disable-gpu', '--mute-audio', '--use-gl=swiftshader',
+  '--disable-background-networking', '--disable-component-update', '--no-pings', '--disable-domain-reliability', '--disable-sync', '--disable-client-side-phishing-detection', '--no-default-browser-check', '--no-first-run',
+  '--disable-features=NetworkTimeServiceQuerying,OptimizationHints,Translate,MediaRouter,AutofillServerCommunication'];
 // Say which pages are being scanned, so loopback is allowed at exactly their origins and nowhere else. launchBrowser does this too; the crawler calls it first
 // because it checks the start URL before it launches anything.
 export function declareTargets(d) {
-  LOCAL_ORIGINS = new Set(originsOf(d).filter(o => isLocalName(o.replace(/:\d+$/, '').replace(/^\[|\]$/g, ''))));
+  LOCAL_ORIGINS = new Set(originsOf(d).filter(o => isLocalName(o.name)).map(o => o.key));
 }
 export async function launchBrowser(puppeteer, d) {
   const hosts = hostsOf(d);
@@ -132,6 +139,7 @@ export async function launchBrowser(puppeteer, d) {
   // 127.0.0.1 traffic is checked. This is what covers WebSockets, SharedWorkers and ServiceWorkers, which the in-page interception cannot see.
   // Fragment mode has no live pages, so the proxy there refuses everything.
   const proxy = await startVettingProxy({ vetUrl, vetHost, blockAll: !d.urls, log: (m) => console.error('scan proxy: ' + m) });
+  activeProxy = proxy;
   args.push('--proxy-server=http://127.0.0.1:' + proxy.port, '--proxy-bypass-list=<-loopback>');
   // UDP does not go through an HTTP proxy. WebRTC (STUN/ICE) is told to use no UDP that is not proxied (measured: a STUN probe to a local UDP port sent 5
   // datagrams without this flag and 0 with it; --force-webrtc-ip-handling-policy did NOT stop it). WebTransport (QUIC) is removed in prepare().
@@ -143,7 +151,7 @@ export async function launchBrowser(puppeteer, d) {
   try {
     const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
     const close = browser.close.bind(browser);
-    browser.close = async () => { try { await close(); } finally { proxy.close(); } };
+    browser.close = async () => { try { await Promise.race([close(), new Promise(r => setTimeout(r, 10000))]); } finally { proxy.close(); } };   // proxy.close() also destroys sockets a page left open
     for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { browser.close().catch(() => {}).finally(() => process.exit(130)); });   // stopped from outside: take the browser down with us
     try { console.error('browser: ' + await browser.version()); } catch (_) {}   // the Chromium version the results came from (tested on 153)
     return browser;
@@ -177,6 +185,20 @@ export async function prepare(page, d) {
     page.on('request', r => (r.url().startsWith('data:') || r.url().startsWith('about:')) ? r.continue() : r.abort());   // offline, deterministic
   }
 }
+// One page load with two bounds. The navigation itself (until the DOM is parsed) must finish within A11Y_NAV_TIMEOUT, else the page is NOT AUDITED with
+// "Navigation timeout" (it hit the deadline). After that the page gets A11Y_IDLE_TIMEOUT (default 15 s) to settle (at most 2 requests in flight, like
+// networkidle2); a page that never settles because of an SSE stream, long poll or never-answered image is audited as it stands and marked slow, not failed.
+// Before every page the previous one is cancelled and the proxy drops its sockets, so a hanging request of page N cannot hold page N+1 or the exit.
+export async function go(page, url) {
+  const nav = +(process.env.A11Y_NAV_TIMEOUT || 40000), idle = +(process.env.A11Y_IDLE_TIMEOUT || 15000);
+  page._a11ySlow = 0;
+  if (activeProxy) { try { await page.goto('about:blank', { timeout: 5000 }); } catch (_) {} activeProxy.dropAll(); }
+  const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: nav });
+  const t0 = Date.now();
+  try { await page.waitForNetworkIdle({ idleTime: 500, concurrency: 2, timeout: Math.min(nav, idle) }); }
+  catch (e) { page._a11ySlow = Math.round((Date.now() - t0) / 1000); }
+  return resp;
+}
 // kind: 'audit' | 'cross' | 'tab' (the small differences between the three scripts' wrapper pages)
 export async function open(page, d, t, { shell, dark, kind }) {
   if (d.urls) {
@@ -185,7 +207,7 @@ export async function open(page, d, t, { shell, dark, kind }) {
       const [ak, av] = DARK_ATTR.split('='), [sk, sv] = DARK_STORE.split('=');
       await page.evaluateOnNewDocument((ak, av, sk, sv) => { try { if (sk) localStorage.setItem(sk, sv || 'dark'); } catch (e) {} if (ak) document.documentElement.setAttribute(ak, av || 'dark'); }, ak, av, sk, sv);
     }
-    await page.goto(d.urls[t], { waitUntil: 'networkidle2', timeout: +(process.env.A11Y_NAV_TIMEOUT || 40000) });
+    await go(page, d.urls[t]);
     if (landedOnLinkLocal(page.url())) throw new Error('redirected to a link-local or metadata address: not audited');
     if (dark && DARK_ATTR) { const [k, v] = DARK_ATTR.split('='); await page.evaluate((k, v) => document.documentElement.setAttribute(k, v), k, v || 'dark'); }
     return;

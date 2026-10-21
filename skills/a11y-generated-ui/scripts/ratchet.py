@@ -197,6 +197,15 @@ def stop_run(p, profile):
     p.wait()
 
 
+ACTIVE = []      # (process, profile) of the engine scripts running now, so that being stopped from outside (the MCP server's timeout) can take them down too
+
+
+def _on_term(signum, frame):
+    for p, profile in list(ACTIVE):
+        stop_run(p, profile)
+    os._exit(143)
+
+
 def node(script, td, *extra):
     """Run an engine script. Its progress lines (stderr) are shown as they happen. A script that runs past A11Y_JOB_TIMEOUT seconds
     (default 7200) is stopped and JobTimeout is raised; audit.mjs writes audit.json as it goes, so the pages done so far are not lost."""
@@ -207,6 +216,10 @@ def node(script, td, *extra):
     profile = str(Path(td) / 'chrome-profile')      # unique to this run: the Chromium that node starts carries it, so it can be found and stopped
     env['A11Y_USER_DATA_DIR'] = profile
     p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env, start_new_session=True)
+    ACTIVE.append((p, profile))
+    if threading.current_thread() is threading.main_thread():
+        import signal
+        signal.signal(signal.SIGTERM, _on_term)      # SIGTERM from the MCP server: stop node and its Chromium, then go
     tail, chunks = collections.deque(maxlen=12), []
 
     def pump_err():
@@ -224,12 +237,14 @@ def node(script, td, *extra):
         p.wait(timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)))
     except subprocess.TimeoutExpired:
         stop_run(p, profile)
+        ACTIVE[:] = [x for x in ACTIVE if x[0] is not p]
         for th in threads:
             th.join(2)
         raise JobTimeout(script)
     for th in threads:
         th.join(5)
     stop_run(p, profile)        # a normal exit leaves nothing behind either
+    ACTIVE[:] = [x for x in ACTIVE if x[0] is not p]
     out = ''.join(chunks)
     if p.returncode:
         msg = next((ln for ln in reversed(tail) if re.search(r'\bError: ', ln)), None)   # the one-line reason, not the stack trace
@@ -543,7 +558,12 @@ def main():
             if a.url and not a.crawl:
                 urls = {urllib.parse.urlparse(a.url).path or '/': a.url}
             if a.url and a.crawl:
-                print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages or 30), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
+                try:
+                    print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages or 30), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
+                except JobTimeout:
+                    print(f"the crawl ran past A11Y_JOB_TIMEOUT ({os.environ.get('A11Y_JOB_TIMEOUT', 7200)} s) and was stopped: no pages were found, so nothing was scanned. "
+                          "Raise A11Y_JOB_TIMEOUT, lower --max-pages / --depth, or list the pages with --urls.", file=sys.stderr)
+                    sys.exit(3)      # 3 = the audit could not run
                 urls = json.loads((td / 'html.json').read_text())['urls']
             if not urls:
                 sys.exit('no pages to scan')
@@ -576,7 +596,6 @@ def main():
             print(node('audit.mjs', td, a.theme), file=sys.stderr)    # progress goes to stderr so that --json output stays pure JSON
         except JobTimeout:
             timed_out = True
-            print('STOPPED: the audit ran past A11Y_JOB_TIMEOUT; the score below covers only the pages finished so far.', file=sys.stderr)
         audit = json.loads((td / 'audit.json').read_text()) if (td / 'audit.json').exists() else {}
         _h = json.loads((td / 'html.json').read_text())
         requested = list(_h.get('urls', _h.get('html', {})))
@@ -586,6 +605,19 @@ def main():
     pairs = collections.defaultdict(list)
     errors = [k for k, v in audit.items() if 'err' in v]
     missing = [k for k in requested if k not in audit]      # asked for, never reached (the run was stopped): not audited, so never 'unchanged'
+    deadline = [k for k, v in audit.items() if 'Navigation timeout' in str(v.get('err', ''))]
+    slow = {k: v['slow'] for k, v in audit.items() if v.get('slow')}
+    if deadline:
+        print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
+    if slow:
+        print(f"{len(slow)} page(s) never went idle on the network (a stream, long poll or request that is never answered) and were audited as they stood after waiting: {', '.join(list(slow)[:5])}{'...' if len(slow) > 5 else ''}", file=sys.stderr)
+    if timed_out:
+        limit = os.environ.get('A11Y_JOB_TIMEOUT', 7200)
+        if missing:
+            print(f"STOPPED: the audit ran past A11Y_JOB_TIMEOUT ({limit} s) with {len(missing)} of {len(requested)} page(s) not audited: {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}."
+                  + ('' if (a.baseline and not scoring_requested(a)) else ' The score covers only the pages that were audited.'), file=sys.stderr)
+        else:
+            print(f"note: the engine did not exit within A11Y_JOB_TIMEOUT ({limit} s) although all {len(requested)} page(s) were audited; the results are complete and were stopped from outside.", file=sys.stderr)
     for k, v in sorted(audit.items()):
         rules = {x['id']: x['nodes'] for x in v.get('v', [])}
         for x in v.get('v', []):
@@ -600,7 +632,7 @@ def main():
         server.shutdown()
     if a.audit_out:
         Path(a.audit_out).write_text(json.dumps({'audit': audit, 'items': items}))
-    scoring = a.score or a.json or a.min_score is not None
+    scoring = scoring_requested(a)
     if scoring:
         rc = score_mode(a, audit, items, requested)
         if not a.baseline:
@@ -609,6 +641,10 @@ def main():
         print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
         return max(rc, ratchet_mode(a, audit, cur, errors, missing, pairs, out))
     return ratchet_mode(a, audit, cur, errors, missing, pairs)
+
+
+def scoring_requested(a):
+    return a.score or a.json or a.min_score is not None
 
 
 def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None):

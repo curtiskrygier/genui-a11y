@@ -4,7 +4,7 @@
 // --path-scope: stay under the start URL's own folder (so /docs/v2/index.html only follows links below /docs/v2/), not just on its origin.
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { launchBrowser, prepare, landedOnLinkLocal, vetUrl, declareTargets } from './lib.mjs';
+import { launchBrowser, prepare, go, landedOnLinkLocal, vetUrl, declareTargets } from './lib.mjs';
 const [dir, start, ...rest] = process.argv.slice(2);
 const opt = (k, d) => { const i = rest.indexOf('--' + k); return i >= 0 ? Number(rest[i + 1]) : d; };
 const MAX = opt('max', 30), DEPTH = opt('depth', 2), DELAY = opt('delay', 500);
@@ -42,7 +42,7 @@ while (queue.length && seen.size < MAX) {
   if (seen.has(url)) continue;
   if (!allowed(url)) { skipped.push(url + '  (robots.txt)'); continue; }
   try {
-    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: +(process.env.A11Y_NAV_TIMEOUT || 40000) });
+    const resp = await go(page, url);
     if (landedOnLinkLocal(page.url())) { skipped.push(url + '  (redirected to a link-local address)'); continue; }
     const type = (resp && resp.headers()['content-type']) || '';
     if (!/html/i.test(type)) continue;
@@ -63,3 +63,4 @@ await b.close();
 const urls = {}; for (const [u, p] of seen) urls[p === '/' ? '/' : p] = u;
 fs.writeFileSync(dir + '/html.json', JSON.stringify({ urls }));
 console.log(`crawled ${seen.size} page(s) on ${origin}${PATH_SCOPE ? ' under ' + scopePrefix : ''} (max ${MAX}, depth ${DEPTH}, ${DELAY} ms apart)` + (disallow.length ? `; robots.txt disallows ${disallow.length} path(s)` : '') + (skipped.length ? `; skipped ${skipped.length}:\n  ` + skipped.slice(0, 8).join('\n  ') : ''));
+process.exit(0);

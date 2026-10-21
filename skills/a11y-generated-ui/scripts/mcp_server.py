@@ -27,7 +27,7 @@ def bounded(a, key, default, lo, hi):
         raise ValueError(f'{key} must be between {lo} and {hi}')
     return int(v)
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 STATIC_HELP = {
     'click_not_keyboard': 'A non-interactive element (span, div) has a click handler but no role and tabindex, so a keyboard user cannot operate it (WCAG 2.1.1). Use a real <button> or <a>, or add role, tabindex="0" and Enter/Space handling.',
@@ -109,7 +109,9 @@ def run_job(job, args):
             cmd += ['--dir', arg]
         job['phase'] = 'scanning'
         limit = int(os.environ.get('A11Y_JOB_TIMEOUT', 1800)) + 120
-        # its own process group, so a timeout kills Chromium and the helper scripts too, not just the Python parent
+        # ratchet.py runs in its own process group, but node and Chromium run in sessions of their own (ratchet starts them that way), so killing the group
+        # does not reach them. On a timeout ratchet gets SIGTERM first: it stops its node and the Chromium found by the run's own --user-data-dir, then exits.
+        # The group kill afterwards is only the backstop for ratchet itself.
         env = {**os.environ, 'A11Y_JOB_TIMEOUT': os.environ.get('A11Y_JOB_TIMEOUT', '1800')}      # an agent-started scan stops after 30 minutes unless the human who runs the server allows more
         proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True)   # never let the scan read the MCP stream
         job['pgid'] = proc.pid
@@ -126,7 +128,15 @@ def run_job(job, args):
         try:
             out = proc.communicate(timeout=limit)[0]
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            proc.terminate()                          # ratchet's handler stops node and Chromium before it exits
+            try:
+                proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)   # backstop for ratchet and any helper left in its group
+            except OSError:
+                pass
             proc.communicate()
             raise RuntimeError(f'scan stopped after {limit} s')
         t_err.join(5)

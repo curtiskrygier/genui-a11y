@@ -88,3 +88,4 @@ for (const t of namesOf(d)) {
 await b.close();
 fs.writeFileSync(dir + '/tabwalk.json', JSON.stringify(out));
 console.log('walked ' + Object.keys(out).length);
+process.exit(0);

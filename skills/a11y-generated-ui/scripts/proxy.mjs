@@ -11,8 +11,16 @@ const hostPort = (s) => {                         // 'host:443' or '[::1]:80' ->
   return m ? { host: m[1], port: +m[2] } : null;
 };
 
+// blockAll (fragment mode, no live pages): every page request is aborted before it reaches the proxy, so whatever arrives here is the browser's own background
+// traffic. It is refused and counted in `blocked`, but not logged: a clean run must not print "blocked google.com" lines the user cannot act on.
 export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log = () => {} }) {
   const blocked = [];
+  // Every socket the proxy holds, on either side. A page that streams (SSE), long-polls or waits on a request that is never answered would otherwise keep
+  // its upstream socket, and so node, alive long after the page was done: dropAll() (per page) and close() destroy them all, and an idle socket is dropped.
+  const CONNECT_MS = +(process.env.A11Y_PROXY_CONNECT_TIMEOUT || 10000), IDLE_MS = +(process.env.A11Y_PROXY_IDLE_TIMEOUT || 60000);
+  const socks = new Set();
+  const track = (s) => { if (socks.has(s)) return s; socks.add(s); s.once('close', () => socks.delete(s)); s.on('error', () => {}); if (IDLE_MS > 0) s.setTimeout(IDLE_MS, () => s.destroy()); return s; };
+  const dropAll = () => { for (const s of [...socks]) { try { s.destroy(); } catch (_) {} } socks.clear(); };
   // Resolve and vet one destination; returns the addresses to connect to, or throws.
   async function allow(scheme, host, port) {
     if (blockAll) throw new Error('no network is allowed in this mode');
@@ -25,22 +33,26 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       const tryNext = (i) => {
         if (i >= addrs.length) return reject(new Error('could not connect'));
         const s = net.connect({ host: addrs[i], port });
-        s.once('connect', () => { s.removeAllListeners('error'); resolve(s); });
+        s.setTimeout(CONNECT_MS, () => s.destroy(new Error('connect timeout')));      // an address that never answers the SYN must not hold the request
+        s.once('connect', () => s.setTimeout(0));
+        s.once('connect', () => { s.removeAllListeners('error'); resolve(track(s)); });
         s.once('error', () => { s.destroy(); tryNext(i + 1); });
       };
       tryNext(0);
     });
   }
-  const refuse = (what, e) => { blocked.push(what); log('blocked ' + what + ': ' + String(e.message).slice(0, 120)); };
+  const refuse = (what, e) => { blocked.push(what); if (!blockAll) log('blocked ' + what + ': ' + String(e.message).slice(0, 120)); };
 
   const server = http.createServer(async (req, res) => {       // plain http:// through the proxy: the request line carries an absolute URL
     let u;
+    track(req.socket);
     try { u = new URL(req.url); } catch (e) { res.writeHead(400).end(); return; }
     try {
       const addrs = await allow(u.protocol === 'https:' ? 'https' : 'http', u.hostname.replace(/^\[|\]$/g, ''), +u.port || 80);
       const sock = await connectAny(addrs, +u.port || 80);
       const headers = { ...req.headers }; delete headers['proxy-connection']; delete headers['proxy-authorization'];
       const up = http.request({ createConnection: () => sock, method: req.method, path: u.pathname + u.search, headers });
+      res.on('close', () => up.destroy());                       // the browser side went away (page done, request cancelled): stop the upstream too
       up.on('response', (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
       up.on('error', () => { try { res.writeHead(502).end(); } catch (_) {} });
       req.pipe(up);
@@ -48,7 +60,7 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
   });
   server.on('connect', async (req, client, head) => {            // CONNECT host:port: https:// and wss:// and (in Chromium) ws:// too
     const hp = hostPort(req.url);
-    client.on('error', () => {});
+    track(client);
     try {
       if (!hp) throw new Error('bad CONNECT target');
       const addrs = await allow(hp.port === 443 ? 'https' : 'http', hp.host, hp.port);
@@ -60,7 +72,7 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
     } catch (e) { refuse(req.url, e); try { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); } catch (_) {} }
   });
   server.on('upgrade', async (req, client, head) => {            // a WebSocket upgrade sent as a plain proxied request, if a browser ever does that
-    client.on('error', () => {});
+    track(client);
     try {
       const u = new URL(req.url);
       const port = +u.port || 80;
@@ -75,5 +87,5 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   server.unref();
-  return { port: server.address().port, blocked, close: () => { try { server.closeAllConnections(); server.close(); } catch (_) {} } };
+  return { port: server.address().port, blocked, dropAll, close: () => { try { dropAll(); server.closeAllConnections(); server.close(); } catch (_) {} } };
 }
