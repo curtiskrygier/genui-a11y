@@ -8,6 +8,8 @@ Release steps (maintainer):
 2. Do **not** move or re-tag `v0.1.0`: it points at pre-hardening code. Say in its release notes that it is withdrawn and v0.1.1 replaces it.
 3. Replace "(unreleased)" with the release date.
 
+Fixes from the fifth roast review: live pages are audited once quiet (no request awaiting a response, no short timer pending, no DOM change for `A11Y_SETTLE_MS`, bounded by `A11Y_IDLE_TIMEOUT`, now 10 s), so content rendered after a slow fetch, chained fetches or a 2-5 s timer is audited; SIGTERM removes the run's temp dir; a sitemap is limited to its own host and port; `crosscheck_report.py` exits 2 on a crash; `--json` with `--baseline` carries a `ratchet` object; the Tab-walk count wording says it counts ARIA-role widgets only; the Linux-only `/proc` reaping is documented.
+
 Fixes from the fourth roast review:
 
 - **One slow request no longer holds the run.** The proxy tracks every socket, destroys the upstream when the browser side closes, drops a page's sockets before the next page and at exit, and times out a connect (10 s) and an idle socket (60 s). The engines exit explicitly. A page now loads until the DOM is parsed (`A11Y_NAV_TIMEOUT`, else "NOT AUDITED: Navigation timeout") and then gets `A11Y_IDLE_TIMEOUT` (15 s) to go network-idle; a page with an SSE stream or a request that is never answered is audited as it stands and listed as "never went idle". The report names pages that hit the deadline, and says "the engine did not exit" instead of a false STOPPED when every page was audited.

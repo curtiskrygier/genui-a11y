@@ -129,6 +129,7 @@ No screen-reader testing, no testing with disabled people, no interactive states
 | `--min-score N` | exit 1 below N; exit 3 when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited, unless `--allow-partial` |
 | `A11Y_JOB_TIMEOUT` | seconds before a run is stopped and its finished pages scored (default 7200) |
 | `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | milliseconds per page load and per axe run (defaults 40000, 25000); raise for very heavy pages |
+| `A11Y_IDLE_TIMEOUT`, `A11Y_SETTLE_MS` | milliseconds (defaults 10000, 1500): live URLs are audited once quiet (no request awaiting a response, no short timer pending, no DOM change) for `A11Y_SETTLE_MS`, waiting at most `A11Y_IDLE_TIMEOUT`; a page that never settles is audited as it stands and named. Content later than the bound is not audited |
 | `A11Y_NO_SANDBOX=1` | run Chromium without its sandbox (containers and CI images that cannot create it); the sandbox is on by default, so use this only for content you trust |
 | `A11Y_MAX_JOBS` | MCP server only: concurrent scans allowed (default 2) |
 | `A11Y_ALLOW_PRIVATE=1` | allow private address ranges (your own internal hosts); link-local and metadata addresses are never allowed |

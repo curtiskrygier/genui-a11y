@@ -23,7 +23,7 @@ Static flags (own markup only):
   hidden_input_widget     a radio/checkbox hidden with display:none (the CSS radio trick): cannot take focus (WCAG 2.1.1)
   svg_no_name             an <svg> with no aria-hidden / role=img / label / <title> (WCAG 1.1.1)
 """
-import argparse, collections, functools, http.server, json, os, re, subprocess, sys, tempfile, threading, urllib.parse, urllib.request
+import argparse, collections, functools, http.server, json, os, re, shutil, subprocess, sys, tempfile, threading, urllib.parse, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -203,6 +203,7 @@ ACTIVE = []      # (process, profile) of the engine scripts running now, so that
 def _on_term(signum, frame):
     for p, profile in list(ACTIVE):
         stop_run(p, profile)
+        shutil.rmtree(Path(profile).parent, ignore_errors=True)      # the run's temp dir (scanned URLs, audit.json): os._exit skips the cleanup that a normal exit does
     os._exit(143)
 
 
@@ -430,13 +431,15 @@ def tot(d, rule):
     return sum(r.get(rule, 0) for r in d.values())
 
 
-def score_mode(a, audit, items, requested):
+def score_mode(a, audit, items, requested, ratchet=None):
     """--score / --json / --min-score: print the report and return the exit code (0, 1 below --min-score, 3 low coverage)."""
     rep = build_report(audit, items, a.url or a.sitemap or a.dir or a.urls or a.items, requested)
     if rep['pages_scanned'] == 0:
         print('no pages could be audited' + (f" ({len(rep['pages_not_audited'])} errored, {len(rep.get('pages_missing', []))} never finished)" if requested else ''), file=sys.stderr)
         return 3
     if a.json:
+        if ratchet is not None:
+            rep['ratchet'] = ratchet        # --baseline together with --json: the ratchet verdict (new and fixed findings) is part of the report
         print(json.dumps(rep, indent=1))
     else:
         print(f"score {rep['score']}/100  grade {rep['grade']} ({rep['grade_word']})  {rep['pages_scanned']} of {rep.get('pages_requested', rep['pages_scanned'])} page(s)/item(s) scored" + ('' if rep.get('coverage', 100) >= 100 else f"  *** PARTIAL: {rep['coverage']}% covered ***"))
@@ -533,10 +536,18 @@ def main():
         with urllib.request.build_opener(NoRedirect).open(a.sitemap, timeout=30) as resp:
             xml = resp.read(5_000_000).decode('utf8', 'replace')
         locs = re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml)
-        listed.extend(u for u in locs if urllib.parse.urlparse(u).hostname == sm.hostname)      # one --confirm-permission covers the sitemap's own host only
-        other = sorted({urllib.parse.urlparse(u).hostname or '?' for u in locs} - {sm.hostname})
+        def origin(u):
+            q = urllib.parse.urlparse(u)
+            try:
+                port = q.port or {'http': 80, 'https': 443}.get(q.scheme)
+            except ValueError:
+                port = None
+            return (q.hostname, port)
+        sm_origin = origin(a.sitemap)
+        listed.extend(u for u in locs if origin(u) == sm_origin)      # one --confirm-permission covers the sitemap's own host and port only (another port is another service)
+        other = sorted({'%s:%s' % origin(u) if origin(u)[0] else '?' for u in locs if origin(u) != sm_origin})
         if other:
-            print(f'skipped {len(locs) - len(listed)} sitemap URL(s) on other host(s) ({", ".join(other[:5])}): permission was for {sm.hostname}. Scan them with their own --urls run.', file=sys.stderr)
+            print(f'skipped {len(locs) - len(listed)} sitemap URL(s) on other host(s) or port(s) ({", ".join(other[:5])}): permission was for {sm.hostname}:{sm_origin[1]}. Scan them with their own --urls run.', file=sys.stderr)
     if listed:
         urls = keyed(listed)
     if live:
@@ -579,7 +590,7 @@ def main():
             tw = json.loads((td / 'tabwalk.json').read_text())
             cur = {k: v['findings'] for k, v in tw.items() if v.get('findings')}
             tot_ = collections.Counter(rr for v in cur.values() for rr in v)
-            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}; composite widgets Tab never reached (not reported as findings): {sum(v.get("composite_unreached", 0) for v in tw.values())}')
+            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}; composite widgets with an ARIA role (tab, menu, listbox, tree, ...) that Tab never reached (not findings; a clickable <span> or a hidden-input radio has no such role, so it is not counted here and is flagged by the static checks instead): {sum(v.get("composite_unreached", 0) for v in tw.values())}')
             for k, v in sorted(tw.items()):
                 for d in v.get('detail', [])[:3]:
                     print('  ', k, d[:140])
@@ -610,7 +621,7 @@ def main():
     if deadline:
         print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
     if slow:
-        print(f"{len(slow)} page(s) never went idle on the network (a stream, long poll or request that is never answered) and were audited as they stood after waiting: {', '.join(list(slow)[:5])}{'...' if len(slow) > 5 else ''}", file=sys.stderr)
+        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or a timer or DOM change that keeps going) and were audited as they stood after waiting: {', '.join(list(slow)[:5])}{'...' if len(slow) > 5 else ''}", file=sys.stderr)
     if timed_out:
         limit = os.environ.get('A11Y_JOB_TIMEOUT', 7200)
         if missing:
@@ -634,10 +645,16 @@ def main():
         Path(a.audit_out).write_text(json.dumps({'audit': audit, 'items': items}))
     scoring = scoring_requested(a)
     if scoring:
-        rc = score_mode(a, audit, items, requested)
         if not a.baseline:
-            return rc
+            return score_mode(a, audit, items, requested)
         out = sys.stderr if a.json else sys.stdout      # --json: stdout stays one JSON document, so the ratchet's text goes to stderr
+        res = {}
+        if a.json:      # the ratchet runs first so that its result can go into the JSON report
+            print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
+            rrc = ratchet_mode(a, audit, cur, errors, missing, pairs, out, res)
+            res['exit'] = rrc
+            return max(score_mode(a, audit, items, requested, res), rrc)
+        rc = score_mode(a, audit, items, requested)
         print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
         return max(rc, ratchet_mode(a, audit, cur, errors, missing, pairs, out))
     return ratchet_mode(a, audit, cur, errors, missing, pairs)
@@ -647,7 +664,7 @@ def scoring_requested(a):
     return a.score or a.json or a.min_score is not None
 
 
-def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None):
+def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None, result=None):
     out = out or sys.stdout
     import builtins
     print = functools.partial(builtins.print, file=out)
@@ -708,6 +725,8 @@ def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None):
         print('  NEW  ', x)
     if fixed:
         print(f'  ({len(fixed)} fixed; run with --update to lock the gain in)')
+    if result is not None:
+        result.update(new=new, fixed=fixed)
     return 1 if new else 0
 
 

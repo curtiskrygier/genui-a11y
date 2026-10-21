@@ -7,6 +7,14 @@ Three engines are three opinions, not a verdict. Where two or more agree an item
 look by hand (axe cannot evaluate text over gradients; HTMLCS contrast needs a computable background; IBM is stricter on form patterns)."""
 import collections, json, re, sys
 from pathlib import Path
+# Exit codes: 0 no finding that two or more engines agree on, 1 at least one such finding, 2 the comparison itself failed (a missing or unreadable engine
+# output, a crash). A crash must not look like "the engines agree", which is also what a plain Python traceback would exit with (1).
+def _crash(et, ev, tb):
+    import traceback
+    traceback.print_exception(et, ev, tb)
+    sys.stderr.flush(); sys.stdout.flush()
+    import os; os._exit(2)
+sys.excepthook = _crash
 d = Path(sys.argv[1])
 theme = 'dark' if '--theme' in sys.argv and sys.argv[sys.argv.index('--theme') + 1] == 'dark' else 'light'
 show = sys.argv[sys.argv.index('--list') + 1] if '--list' in sys.argv else None

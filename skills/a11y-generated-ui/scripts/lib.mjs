@@ -186,17 +186,54 @@ export async function prepare(page, d) {
   }
 }
 // One page load with two bounds. The navigation itself (until the DOM is parsed) must finish within A11Y_NAV_TIMEOUT, else the page is NOT AUDITED with
-// "Navigation timeout" (it hit the deadline). After that the page gets A11Y_IDLE_TIMEOUT (default 15 s) to settle (at most 2 requests in flight, like
-// networkidle2); a page that never settles because of an SSE stream, long poll or never-answered image is audited as it stands and marked slow, not failed.
+// "Navigation timeout" (it hit the deadline). After that the page gets A11Y_IDLE_TIMEOUT (default 10 s) to settle: no request awaiting a response, at most 2
+// requests in flight, no one-shot timer (up to that bound) still pending, and no DOM mutation for A11Y_SETTLE_MS (default 1500 ms). So content a page renders
+// after a slow fetch, chained fetches or a timer is in the DOM when it is audited. A page that never settles (an SSE stream does not count against it, but a
+// long poll, a request that is never answered or a timer that keeps re-arming does) is audited as it stands and marked slow, not failed.
 // Before every page the previous one is cancelled and the proxy drops its sockets, so a hanging request of page N cannot hold page N+1 or the exit.
+function watchSettle(page) {
+  if (page._a11yWatch) return page._a11yWatch;
+  const w = page._a11yWatch = { awaiting: new Set(), inflight: new Set(), last: Date.now() };
+  const bump = () => { w.last = Date.now(); };
+  page.on('request', r => { w.awaiting.add(r); w.inflight.add(r); bump(); });
+  page.on('response', r => { w.awaiting.delete(r.request()); bump(); });
+  for (const ev of ['requestfinished', 'requestfailed']) page.on(ev, r => { w.awaiting.delete(r); w.inflight.delete(r); bump(); });
+  w.bump = bump;
+  return w;
+}
+const SETTLE_PROBE = (cap) => {      // runs in every new document: one-shot timers (up to `cap` ms) that have not fired, and the time of the last DOM mutation
+  const st = window.__a11ySettle = { timers: new Set(), last: performance.now() };
+  try {
+    const st0 = window.setTimeout, ct0 = window.clearTimeout;
+    window.setTimeout = function (fn, ms, ...args) {
+      if (typeof fn !== 'function' || !(+ms <= cap)) return st0.call(this, fn, ms, ...args);
+      let id; const wrapped = function (...a) { st.timers.delete(id); st.last = performance.now(); return fn.apply(this, a); };
+      id = st0.call(this, wrapped, ms, ...args); st.timers.add(id); return id;
+    };
+    window.clearTimeout = function (id) { st.timers.delete(id); return ct0.call(this, id); };
+    new MutationObserver(() => { st.last = performance.now(); }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  } catch (e) {}
+};
 export async function go(page, url) {
-  const nav = +(process.env.A11Y_NAV_TIMEOUT || 40000), idle = +(process.env.A11Y_IDLE_TIMEOUT || 15000);
+  const nav = +(process.env.A11Y_NAV_TIMEOUT || 40000), idle = +(process.env.A11Y_IDLE_TIMEOUT || 10000);
+  const quiet = process.env.A11Y_SETTLE_MS === undefined || process.env.A11Y_SETTLE_MS === '' ? 1500 : Math.max(0, +process.env.A11Y_SETTLE_MS || 0);
+  const bound = Math.min(nav, idle), netQuiet = quiet === 0 ? 0 : 500;
   page._a11ySlow = 0;
+  const w = watchSettle(page);
+  if (!page._a11yProbe) { page._a11yProbe = true; await page.evaluateOnNewDocument(SETTLE_PROBE, bound); }
   if (activeProxy) { try { await page.goto('about:blank', { timeout: 5000 }); } catch (_) {} activeProxy.dropAll(); }
+  w.awaiting.clear(); w.inflight.clear();
   const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: nav });
   const t0 = Date.now();
-  try { await page.waitForNetworkIdle({ idleTime: 500, concurrency: 2, timeout: Math.min(nav, idle) }); }
-  catch (e) { page._a11ySlow = Math.round((Date.now() - t0) / 1000); }
+  w.last = t0;
+  for (;;) {
+    let dom = { timers: 0, quiet: 1e9 };
+    try { dom = await page.evaluate(() => { const s = window.__a11ySettle; return s ? { timers: s.timers.size, quiet: performance.now() - s.last } : { timers: 0, quiet: 1e9 }; }); } catch (_) { /* navigating or closing: judge by the network alone */ }
+    const busy = w.awaiting.size > 0 || w.inflight.size > 2 || dom.timers > 0;
+    if (!busy && Date.now() - w.last >= netQuiet && dom.quiet >= quiet) break;
+    if (Date.now() - t0 >= bound) { page._a11ySlow = Math.round((Date.now() - t0) / 1000) || 1; break; }
+    await new Promise(r => setTimeout(r, 100));
+  }
   return resp;
 }
 // kind: 'audit' | 'cross' | 'tab' (the small differences between the three scripts' wrapper pages)

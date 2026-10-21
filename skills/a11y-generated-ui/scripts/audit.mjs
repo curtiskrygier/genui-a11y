@@ -25,7 +25,7 @@ for (const t of names) {
     // pass and fail from run to run (seen on big_reveal, kinetic_headline, gmail_unread_count).
     await page.addStyleTag({ content: '*,*::before,*::after{animation-duration:0.001s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition:none!important}' });
     await new Promise(r => setTimeout(r, 200));
-    if (page._a11ySlow) res.slow = page._a11ySlow;          // the network never went idle (stream, long poll, request never answered); audited as it stood
+    if (page._a11ySlow) res.slow = page._a11ySlow;          // the page never settled (network, timers or DOM changes); audited as it stood
     if (d.urls) res.src = (await page.content()).slice(0, 2000000);
     await page.evaluate(axeSrc);
     const ax = await Promise.race([
