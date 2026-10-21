@@ -33,24 +33,30 @@ def tcp_listener(seen):
                 seen.append(self.request.recv(200).split(b'\r\n')[0].decode('latin1') or '(connection)')
             except Exception:
                 seen.append('(connection)')
-    s = Tcp(('127.0.0.1', 0), H)
+    s = Tcp(('0.0.0.0', 0), H)      # all IPv4 addresses, so that 127.0.0.2 and 0.0.0.0 (which the kernel routes here) reach it too
     threading.Thread(target=s.serve_forever, daemon=True).start()
     return s
 
 
+HOSTS = ['127.0.0.1', '0.0.0.0', '0', '[::]', '[::1]', '[::ffff:127.0.0.1]', '127.0.0.2', '127.1', '0x7f.1', '2130706433']
+
 PROBE = """<!doctype html><html lang="en"><head><title>probe</title></head><body><main><p>probe</p></main><script>
-const T = 'http://127.0.0.1:%(tcp)d', W = 'ws://127.0.0.1:%(tcp)d';
 const go = (f) => { try { const r = f(); if (r && r.catch) r.catch(() => {}); } catch (e) {} };
 go(() => fetch('/alive'));                                    // control: the page reached its own origin
 go(() => fetch('/slow'));                                     // keeps the page "busy" so the scan waits while the probes run
+// every spelling of "this machine" that the kernel routes to localhost, with A11Y_ALLOW_PRIVATE=1 set (the R3 roast found 0.0.0.0 and 0 got through)
+for (const H of %(hosts)s) {
+const T = 'http://' + H + ':%(tcp)d', W = 'ws://' + H + ':%(tcp)d';
 go(() => { new Image().src = T + '/img'; });
 go(() => fetch(T + '/fetch', { mode: 'no-cors' }));
 go(() => navigator.sendBeacon(T + '/beacon', 'x'));
 go(() => { const f = document.createElement('iframe'); f.src = T + '/iframe'; document.body.appendChild(f); });
 go(() => new WebSocket(W + '/ws'));
 go(() => new EventSource(T + '/sse'));
-go(() => new Worker(URL.createObjectURL(new Blob(["fetch('" + T + "/worker', {mode:'no-cors'}).catch(()=>{}); try { new WebTransport('https://127.0.0.1:%(udp)d/wtw').ready.catch(()=>{}) } catch (e) {}"]))));
+go(() => new Worker(URL.createObjectURL(new Blob(["fetch('" + T + "/worker', {mode:'no-cors'}).catch(()=>{});"]))));
 go(() => new SharedWorker(URL.createObjectURL(new Blob(["fetch('" + T + "/sharedworker', {mode:'no-cors'}).catch(()=>{}); new WebSocket('" + W + "/sharedworker-ws')"]))));
+}
+go(() => new Worker(URL.createObjectURL(new Blob(["try { new WebTransport('https://127.0.0.1:%(udp)d/wtw').ready.catch(()=>{}) } catch (e) {}"]))));
 go(() => { const p = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:%(udp)d' }] }); p.createDataChannel('x'); return p.createOffer().then(o => p.setLocalDescription(o)); });
 go(() => new WebTransport('https://127.0.0.1:%(udp)d/wt').ready);
 </script></body></html>"""
@@ -76,7 +82,14 @@ def test_a_scanned_page_cannot_reach_a_local_service(where):
             except OSError:
                 return
     threading.Thread(target=udp_loop, daemon=True).start()
-    page = (PROBE % {'tcp': tcp.server_address[1], 'udp': udp.getsockname()[1]}).encode()
+    for h in ('0.0.0.0', '127.0.0.2'):      # control: on this kernel these names really do reach the listener, so a clean result below means the guard held
+        c = socket.create_connection((h, tcp.server_address[1]), timeout=2); c.sendall(b'GET /control HTTP/1.0\r\n\r\n'); c.close()
+    deadline = time.time() + 3
+    while len(tcp_seen) < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert len(tcp_seen) == 2, 'the listener is not reachable through 0.0.0.0 / 127.0.0.2 here, so the probe would prove nothing'
+    tcp_seen.clear()
+    page = (PROBE % {'tcp': tcp.server_address[1], 'udp': udp.getsockname()[1], 'hosts': json.dumps(HOSTS)}).encode()
 
     class Page(BaseHTTPRequestHandler):
         def log_message(self, *a): pass

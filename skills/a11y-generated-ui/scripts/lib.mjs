@@ -23,17 +23,17 @@ const DARK_STORE = process.env.A11Y_DARK_STORAGE || '';      // live mode, for s
 //     --webrtc-ip-handling-policy=disable_non_proxied_udp and QUIC with --disable-quic. See the README for what is and is not covered.
 // Addresses are parsed to bytes, and every form that embeds an IPv4 address (IPv4-mapped, NAT64, 6to4, IPv4-compatible) is classified by the IPv4
 // inside it. Anything that cannot be parsed is treated as not public.
-// Each target host is resolved once here and pinned for the browser (--host-resolver-rules), so the address checked is the address used.
-// Residual risk: redirect and subresource hosts are checked per request but not pinned (a hostile DNS server could answer differently to Chromium than
-// to Node); for untrusted sites scan from a container with no sensitive network access.
+// Each host is resolved once (vetHost) and the proxy connects to exactly the addresses that were checked, for the starting page, redirects and
+// subresources alike, so the address checked is the address used. Chromium does not resolve names itself when it uses a fixed proxy. For untrusted
+// sites still scan from a container with no sensitive network access.
 const LOCAL_NAMES = new Set(['localhost', '127.0.0.1', '::1']);
 const bare = (h) => String(h).replace(/^\[|\]$/g, '').toLowerCase();
 export const isLocalName = (h) => LOCAL_NAMES.has(bare(h));
 function classify4(o) {
   const [o1, o2, o3] = o;
-  if (o1 === 127) return 'loopback';
+  if (o1 === 127 || o1 === 0) return 'loopback';     // 0.0.0.0/8 too: on Linux a connection to 0.0.0.0 (or "0") reaches this machine's own services
   if (o1 === 169 && o2 === 254) return 'link-local';
-  if (o1 === 0 || o1 === 10 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168) || (o1 === 100 && o2 >= 64 && o2 <= 127)
+  if (o1 === 10 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168) || (o1 === 100 && o2 >= 64 && o2 <= 127)
       || (o1 === 192 && o2 === 0 && o3 === 0) || (o1 === 198 && (o2 === 18 || o2 === 19)) || o1 >= 224) return 'private';
   return 'public';
 }
@@ -136,12 +136,16 @@ export async function launchBrowser(puppeteer, d) {
   // UDP does not go through an HTTP proxy. WebRTC (STUN/ICE) is told to use no UDP that is not proxied (measured: a STUN probe to a local UDP port sent 5
   // datagrams without this flag and 0 with it; --force-webrtc-ip-handling-policy did NOT stop it). WebTransport (QUIC) is removed in prepare().
   args.push('--webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-quic');
+  const profile = process.env.A11Y_USER_DATA_DIR;      // set by ratchet.py: a directory unique to the run, so a timeout can find and stop this Chromium
+  if (profile) args.push('--user-data-dir=' + profile);
   const noSandbox = process.env.A11Y_NO_SANDBOX === '1';
   if (noSandbox) args.push('--no-sandbox');
   try {
     const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
     const close = browser.close.bind(browser);
     browser.close = async () => { try { await close(); } finally { proxy.close(); } };
+    for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { browser.close().catch(() => {}).finally(() => process.exit(130)); });   // stopped from outside: take the browser down with us
+    try { console.error('browser: ' + await browser.version()); } catch (_) {}   // the Chromium version the results came from (tested on 153)
     return browser;
   } catch (e) {
     proxy.close();
