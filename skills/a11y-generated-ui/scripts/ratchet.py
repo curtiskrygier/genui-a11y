@@ -250,6 +250,9 @@ def node(script, td, *extra):
     stop_run(p, profile)        # a normal exit leaves nothing behind either
     ACTIVE[:] = [x for x in ACTIVE if x[0] is not p]
     out = ''.join(chunks)
+    if p.returncode == 3 and tail:
+        print(f'{script} could not run (the reason is above)', file=sys.stderr)      # an engine's own refusal (e.g. an unpatched Node) is already printed
+        sys.exit(3)
     if p.returncode:
         msg = next((ln for ln in reversed(tail) if re.search(r'\bError: ', ln)), None)   # the one-line reason, not the stack trace
         print(f'{script} failed: ' + (msg or '\n'.join(tail) or out)[-800:], file=sys.stderr)
