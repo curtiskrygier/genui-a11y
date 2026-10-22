@@ -161,6 +161,8 @@ def test_report_where_no_page_could_be_audited_exits_3(tmp_path):
 
 def test_sigterm_removes_the_temp_dir_without_an_engine(tmp_path):
     # Runs ratchet's own SIGTERM handler with a registered temp dir and no engine running (the "between engines" case), in a child process.
+    # Limit: the test installs the handler itself (ratchet installs it at its first engine start), because hitting the exact gap between
+    # two engines of a real run is a timing race; the engine-running case is covered end to end in test_roast_r5.py.
     code = ("import os, signal, sys, tempfile; sys.path.insert(0, sys.argv[1]); import ratchet; t = tempfile.mkdtemp(dir=sys.argv[2]); "
             "open(os.path.join(t, 'audit.json'), 'w').write('{}'); ratchet.TEMP.append(t); signal.signal(signal.SIGTERM, ratchet._on_term); "
             "print(t, flush=True); os.kill(os.getpid(), signal.SIGTERM)")

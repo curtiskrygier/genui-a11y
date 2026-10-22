@@ -241,7 +241,8 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
       // tracked timer callback is a loop only when it repeats that callback's own delay. Unrelated one-shot renders that share a helper
       // line (a timer helper, zone.js, await sleep(n) with different n) keep their own delays, so they stay one-shot and hold the wait.
       const d = +ms || 0;
-      const site = String((new Error()).stack || '').split('\n')[2] || '';
+      let site = '';
+      try { site = String((new Error()).stack || '').split('\n')[2] || ''; } catch (e) {}   // a page's own Error.prepareStackTrace may throw: then key on the function only
       const fnSeen = armed.get(fn), siteSeen = site ? sites.get(site) : undefined;
       const repeat = (fnSeen !== undefined && fnSeen === d) || (siteSeen !== undefined && siteSeen === d) || (inCb > 0 && cbDelay === d);
       armed.set(fn, d); if (site) sites.set(site, d);
@@ -325,8 +326,8 @@ export async function go(page, url, { crawl = false } = {}) {
     try {
       const probe = (quiet) => {
         const s = window.__a11ySettle, t = performance.now();
-        return s ? { timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
-                 : { timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
+        return s ? { origin: location.origin, timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
+                 : { origin: location.origin, timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
       };
       dom = await page.evaluate(probe, quiet);
       const mainOrigin = (() => { try { return new URL(page.url()).origin; } catch (_) { return ''; } })();
@@ -335,6 +336,7 @@ export async function go(page, url, { crawl = false } = {}) {
         const fu = f.url();
         if (/^https?:/.test(fu) && (() => { try { return new URL(fu).origin !== mainOrigin; } catch (_) { return true; } })()) continue;   // not audited, so it does not hold the wait
         let x; try { x = await f.evaluate(probe, quiet); } catch (_) { continue; }   // a frame being torn down or navigating
+        if (x.origin !== dom.origin) continue;      // sandboxed (opaque origin) and data: frames are not audited either, so they do not hold the wait
         dom = { timers: dom.timers + x.timers, quiet: Math.min(dom.quiet, x.quiet), quietEl: Math.min(dom.quietEl, x.quietEl), active: dom.active || x.active };
       }
     } catch (_) { /* navigating or closing: judge by the network alone */ }
