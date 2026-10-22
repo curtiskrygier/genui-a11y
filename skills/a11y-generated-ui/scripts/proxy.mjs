@@ -42,7 +42,7 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       tryNext(0);
     });
   }
-  const NONCE = crypto.randomUUID();      // per run: a site cannot forge the mark below, because it cannot know this value
+  let NONCE = crypto.randomUUID();      // per page (rotate): a site cannot forge the mark below, because it cannot know this value
   const MINE = (why) => ({ 'x-a11y-scan-proxy': NONCE + ' ' + why.replace(/[^\x20-\x7e]/g, '?') });   // marks a response the proxy made itself: the page was never reached, so it is not audited
   const refuse = (what, e) => { blocked.push(what); if (!blockAll) log('blocked ' + what + ': ' + String(e.message).slice(0, 120)); };
 
@@ -90,5 +90,5 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   server.unref();
-  return { port: server.address().port, blocked, dropAll, nonce: NONCE, close: () => { try { dropAll(); server.closeAllConnections(); server.close(); } catch (_) {} } };
+  return { port: server.address().port, blocked, dropAll, get nonce() { return NONCE; }, rotate: () => { NONCE = crypto.randomUUID(); }, close: () => { try { dropAll(); server.closeAllConnections(); server.close(); } catch (_) {} } };
 }

@@ -16,7 +16,7 @@ const COMPOSITE = new Set(['radio','tab','menuitem','menuitemcheckbox','menuitem
 const b = await launchBrowser(puppeteer, d);
 let page = await b.newPage();
 await prepare(page, d);
-const cdp = await page.createCDPSession();
+let cdp = await page.createCDPSession();
 await cdp.send('Accessibility.enable'); await cdp.send('DOM.enable');
 const val = (p) => (p && p.value !== undefined && p.value !== null) ? p.value : '';
 const info = (nodes, bid) => {   // the AX node for one DOM node
@@ -82,7 +82,11 @@ for (const t of namesOf(d)) {
       if (dis || reachedBackend.has(n.backendDOMNodeId) || inNative.has(n.nodeId)) continue;
       if (CONTROLS.has(role)) add('unreachable_control', role + ' ' + String(val(n.name)).slice(0, 40)); else if (COMPOSITE.has(role)) res.composite_unreached++;
     }
-  } catch (e) { res.err = String(e.message).slice(0, 100); page = await recover(b, page, d, e); }
+  } catch (e) {
+    res.err = String(e.message).slice(0, 100);
+    const fresh = await recover(b, page, d, e);
+    if (fresh !== page) { page = fresh; cdp = await page.createCDPSession(); await cdp.send('Accessibility.enable'); await cdp.send('DOM.enable'); }   // the old session died with the old tab
+  }
   out[t] = res;
 }
 await b.close();

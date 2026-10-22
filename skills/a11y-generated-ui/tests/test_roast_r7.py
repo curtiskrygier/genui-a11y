@@ -159,9 +159,14 @@ def test_report_where_no_page_could_be_audited_exits_3(tmp_path):
     assert r.returncode == 3 and 'no page could be audited' in r.stderr, (r.returncode, r.stdout[-300:], r.stderr[-300:])
 
 
-def test_sigterm_removes_the_temp_dir_without_an_engine():
-    src = (SCRIPTS / 'ratchet.py').read_text()          # reading the code: a SIGTERM between engines is hard to time in a test
-    assert 'TEMP.append(t)' in src and 'for t in TEMP:' in src
+def test_sigterm_removes_the_temp_dir_without_an_engine(tmp_path):
+    # Runs ratchet's own SIGTERM handler with a registered temp dir and no engine running (the "between engines" case), in a child process.
+    code = ("import os, signal, sys, tempfile; sys.path.insert(0, sys.argv[1]); import ratchet; t = tempfile.mkdtemp(dir=sys.argv[2]); "
+            "open(os.path.join(t, 'audit.json'), 'w').write('{}'); ratchet.TEMP.append(t); signal.signal(signal.SIGTERM, ratchet._on_term); "
+            "print(t, flush=True); os.kill(os.getpid(), signal.SIGTERM)")
+    r = subprocess.run([sys.executable, '-c', code, str(SCRIPTS), str(tmp_path)], capture_output=True, text=True, timeout=30)
+    t = r.stdout.strip()
+    assert r.returncode in (143, -15) and t and not os.path.exists(t), (r.returncode, t, r.stderr[-300:])
 
 
 def test_node_without_the_october_2026_security_fixes_is_refused():

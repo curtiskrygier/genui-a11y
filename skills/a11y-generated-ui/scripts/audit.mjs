@@ -47,7 +47,7 @@ for (const t of names) {
       new Promise((_, rej) => setTimeout(() => rej(new Error('axe timeout')), +(process.env.A11Y_AXE_TIMEOUT || 25000))),
     ]);
     res.v = ax.v; res.p = ax.p; res.inc = ax.inc;
-  } catch (e) { res.err = String(e.message).slice(0, 100); page = await recover(b, page, d, e); }
+  } catch (e) { res.err = String(e.message).replace(/Increase the 'protocolTimeout'.*$/, 'the page kept its tab busy (raise A11Y_PROTOCOL_TIMEOUT for very heavy pages)').slice(0, 140); page = await recover(b, page, d, e); }
   out[t] = res;
   n++;
   console.error('[' + n + '/' + names.length + '] ' + t + (res.err ? '  NOT AUDITED: ' + res.err : ''));

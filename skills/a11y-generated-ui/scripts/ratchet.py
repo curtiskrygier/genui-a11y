@@ -604,7 +604,10 @@ def main():
             for k, v in sorted(tw.items()):
                 for d in v.get('detail', [])[:3]:
                     print('  ', k, d[:140])
-            return 1 if cur else 0
+            tw_err = {k: v['err'] for k, v in tw.items() if v.get('err')}
+            if tw_err:
+                print(f"NOT WALKED ({len(tw_err)}): " + '; '.join(f'{k} [{e}]' for k, e in list(tw_err.items())[:5]) + '  (an item that could not be walked is not clean)', file=sys.stderr)
+            return 1 if cur else 3 if tw_err else 0
         if a.crosscheck:
             print(node('audit.mjs', td, a.theme))
             for eng in ('htmlcs', 'ibm'):
@@ -631,7 +634,7 @@ def main():
     if deadline:
         print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
     if slow:
-        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or content that keeps changing, such as a ticking clock) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
+        print(f"{len(slow)} page(s) never went idle (a request still waiting for its answer, a one-shot timer still pending, or content that keeps changing, such as a ticking clock) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
               f"({int(os.environ.get('A11Y_IDLE_TIMEOUT', 10000)) // 1000} s) each: {', '.join(f'{k} ({s_} s)' for k, s_ in list(slow.items())[:5])}{'...' if len(slow) > 5 else ''}. "
               "Lower A11Y_IDLE_TIMEOUT to scan such pages faster; content that appears after the wait is not audited.", file=sys.stderr)
     if timed_out:

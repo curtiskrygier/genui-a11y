@@ -231,13 +231,17 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
   const REPEAT = 3;                  // an attribute on a node that has changed this many times is motion (JS animation, carousel class), not content
   try {
     const st0 = window.setTimeout, ct0 = window.clearTimeout, si0 = window.setInterval, ci0 = window.clearInterval, raf0 = window.requestAnimationFrame;
-    const changed = new WeakMap(), armed = new WeakMap();
+    const changed = new WeakMap(), armed = new WeakMap(), sites = new Map();
+    let inCb = 0;
     const now = () => performance.now();
     window.setTimeout = function (fn, ms, ...args) {
       if (typeof fn !== 'function' || !(+ms <= cap)) return st0.call(this, fn, ms, ...args);
-      const n = (armed.get(fn) || 0) + 1; armed.set(fn, n);
-      const set = n >= 2 ? st.loops : st.timers;      // the same callback armed again is a loop (carousel, poll): activity, not a one-shot render
-      let id; const wrapped = function (...a) { set.delete(id); st.act = now(); return fn.apply(this, a); };
+      // A loop (carousel, poll) re-arms from the same place in its code, often with a new arrow or .bind each time: key on the calling
+      // line as well as the function, and treat a timer armed from inside a tracked timer callback as part of a loop too.
+      const site = String((new Error()).stack || '').split('\n')[2] || '';
+      const n = Math.max((armed.get(fn) || 0) + 1, (sites.get(site) || 0) + 1); armed.set(fn, n); if (site) sites.set(site, n);
+      const set = n >= 2 || inCb > 0 ? st.loops : st.timers;
+      let id; const wrapped = function (...a) { set.delete(id); st.act = now(); inCb++; try { return fn.apply(this, a); } finally { inCb--; } };
       id = st0.call(this, wrapped, ms, ...args); set.add(id); return id;
     };
     window.clearTimeout = function (id) { st.timers.delete(id); st.loops.delete(id); return ct0.call(this, id); };
@@ -255,16 +259,18 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
         return pt0((...a) => { st.timers.delete(tok); st.act = now(); return fn(...a); }, o).finally(() => st.timers.delete(tok));
       };
     }
-    const stream = (C, closeName) => {                // a live connection is activity until it is closed
+    const stream = (C, closeName) => {                // a live connection is activity until it is closed; a subclass (class X extends WebSocket) still works
       if (!C) return C;
-      const W = function (...a) {
-        const x = new C(...a); st.streams.add(x); st.act = now();
-        x.addEventListener('message', () => { st.act = now(); });
-        for (const ev of ['close', 'error']) x.addEventListener(ev, () => { if (ev === 'close' || x.readyState === 2) st.streams.delete(x); });
-        const c = x[closeName]; if (c) x[closeName] = function (...b) { st.streams.delete(x); return c.apply(this, b); };
-        return x;
+      const W = class extends C {
+        constructor(...a) {
+          super(...a); st.streams.add(this); st.act = now();
+          this.addEventListener('message', () => { st.act = now(); });
+          for (const ev of ['close', 'error']) this.addEventListener(ev, () => { if (ev === 'close' || this.readyState === 2) st.streams.delete(this); });
+        }
+        [closeName](...b) { st.streams.delete(this); return super[closeName](...b); }
       };
-      W.prototype = C.prototype; Object.setPrototypeOf(W, C); return W;
+      Object.defineProperty(W, 'name', { value: C.name });
+      return W;
     };
     window.WebSocket = stream(window.WebSocket, 'close');
     window.EventSource = stream(window.EventSource, 'close');
@@ -290,7 +296,7 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
 // After a page broke its tab (a renderer pinned by a busy script, a crashed target), every later call on that tab fails too: one bad page would
 // mark the rest of the run NOT AUDITED. So a tab that failed at the protocol level is closed and replaced by a fresh, prepared one.
 export async function recover(b, page, d, e) {
-  if (!/timed out|Session closed|Target closed|detached|Protocol error|crashed/i.test(String(e && e.message))) return page;
+  if (!/timed out|timeout|Session closed|Target closed|detached|Protocol error|crashed/i.test(String(e && e.message))) return page;   // includes Navigation timeout and axe timeout
   try { await Promise.race([page.close(), new Promise(r => setTimeout(r, 5000))]); } catch (_) {}
   const fresh = await b.newPage();
   await prepare(fresh, d);
@@ -304,7 +310,7 @@ export async function go(page, url, { crawl = false } = {}) {
   page._a11ySlow = 0;
   const w = watchSettle(page);
   if (!page._a11yProbe) { page._a11yProbe = true; await page.evaluateOnNewDocument(SETTLE_PROBE, Math.min(nav, full)); }
-  if (activeProxy) { try { await page.goto('about:blank', { timeout: 5000 }); } catch (_) {} activeProxy.dropAll(); }
+  if (activeProxy) { try { await page.goto('about:blank', { timeout: 5000 }); } catch (_) {} activeProxy.dropAll(); activeProxy.rotate(); }   // a new nonce per page: one page cannot learn the mark for the next
   w.awaiting.clear(); w.inflight.clear(); w.data.clear();
   const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: nav });
   const t0 = Date.now();
@@ -312,11 +318,17 @@ export async function go(page, url, { crawl = false } = {}) {
   for (;;) {
     let dom = { timers: 0, quiet: 1e9, active: false };
     try {
-      dom = await page.evaluate((quiet) => {
+      const probe = (quiet) => {
         const s = window.__a11ySettle, t = performance.now();
         return s ? { timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
                  : { timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
-      }, quiet);
+      };
+      dom = await page.evaluate(probe, quiet);
+      for (const f of page.frames()) {               // iframes are audited with the page, so their late content is waited for too
+        if (f === page.mainFrame()) continue;
+        let x; try { x = await f.evaluate(probe, quiet); } catch (_) { continue; }   // a frame being torn down or navigating
+        dom = { timers: dom.timers + x.timers, quiet: Math.min(dom.quiet, x.quiet), quietEl: Math.min(dom.quietEl, x.quietEl), active: dom.active || x.active };
+      }
     } catch (_) { /* navigating or closing: judge by the network alone */ }
     if (crawl) { dom.quiet = dom.quietEl ?? dom.quiet; dom.active = false; }    // the crawl needs links: new elements, not text or activity
     const busy = w.awaiting.size > 0 || w.inflight.size > 2 || w.data.size > 0 || dom.timers > 0;
