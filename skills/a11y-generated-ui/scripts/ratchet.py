@@ -417,6 +417,8 @@ def build_report(audit, items, label, requested=None):
             'needs_manual_review': dict(review.most_common(15)),        # axe 'incomplete': checks it could not decide; they are not in the score
             'layer_fallback_rules': sorted(FALLBACKS),           # rules whose layer came from the axe category because they had no WCAG criterion tag (normally empty)
             'pages_not_assessed': [k for k, p in pages.items() if p[0] is None],
+            'pages_slow': {k: v['slow'] for k, v in sorted(audit.items()) if v.get('slow')},     # never went quiet within A11Y_IDLE_TIMEOUT: audited as they stood, after waiting this many seconds
+            'pages_deadline': sorted(k for k, v in audit.items() if 'Navigation timeout' in str(v.get('err', ''))),   # hit A11Y_NAV_TIMEOUT: not audited (also in pages_not_audited)
             'failing_checks': sorted(info.values(), key=lambda e: (-e['points_lost'], -e['pages'])),
             'pages': {k: {'score': p[0], 'grade': grade(p[0]) if p[0] is not None else None, 'layers': p[1], 'static_flags': inputs[k][1]} for k, p in pages.items()}, 'note': BANNER}
     if requested is not None:
@@ -572,7 +574,7 @@ def main():
                 try:
                     print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages or 30), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
                 except JobTimeout:
-                    print(f"the crawl ran past A11Y_JOB_TIMEOUT ({os.environ.get('A11Y_JOB_TIMEOUT', 7200)} s) and was stopped: no pages were found, so nothing was scanned. "
+                    print(f"the crawl ran past A11Y_JOB_TIMEOUT ({os.environ.get('A11Y_JOB_TIMEOUT', 7200)} s) and was stopped before it finished, so nothing was scanned. "
                           "Raise A11Y_JOB_TIMEOUT, lower --max-pages / --depth, or list the pages with --urls.", file=sys.stderr)
                     sys.exit(3)      # 3 = the audit could not run
                 urls = json.loads((td / 'html.json').read_text())['urls']
@@ -621,7 +623,9 @@ def main():
     if deadline:
         print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
     if slow:
-        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or a timer or DOM change that keeps going) and were audited as they stood after waiting: {', '.join(list(slow)[:5])}{'...' if len(slow) > 5 else ''}", file=sys.stderr)
+        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or a page that keeps changing new content) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
+              f"({int(os.environ.get('A11Y_IDLE_TIMEOUT', 10000)) // 1000} s) each: {', '.join(f'{k} ({s_} s)' for k, s_ in list(slow.items())[:5])}{'...' if len(slow) > 5 else ''}. "
+              "Lower A11Y_IDLE_TIMEOUT to scan such pages faster; content that appears after the wait is not audited.", file=sys.stderr)
     if timed_out:
         limit = os.environ.get('A11Y_JOB_TIMEOUT', 7200)
         if missing:

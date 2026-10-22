@@ -8,6 +8,8 @@ Release steps (maintainer):
 2. Do **not** move or re-tag `v0.1.0`: it points at pre-hardening code. Say in its release notes that it is withdrawn and v0.1.1 replaces it.
 3. Replace "(unreleased)" with the release date.
 
+Fixes from the sixth roast review: motion no longer holds the settle wait (`style` changes, a node changed 3+ times and a timer callback armed a second time stop counting), and the crawl waits at most `A11Y_CRAWL_IDLE_TIMEOUT` (3 s) per page, so the full wait is paid once, by the audit; `--json` and the MCP report list `pages_slow` and `pages_deadline`; the "never went quiet" note names `A11Y_IDLE_TIMEOUT` and each page's wait; a crawl stopped by `A11Y_JOB_TIMEOUT` no longer says no pages were found; `A11Y_NAV_TIMEOUT` is described as the bound until the DOM is parsed.
+
 Fixes from the fifth roast review: live pages are audited once quiet (no request awaiting a response, no short timer pending, no DOM change for `A11Y_SETTLE_MS`, bounded by `A11Y_IDLE_TIMEOUT`, now 10 s), so content rendered after a slow fetch, chained fetches or a 2-5 s timer is audited; SIGTERM removes the run's temp dir; a sitemap is limited to its own host and port; `crosscheck_report.py` exits 2 on a crash; `--json` with `--baseline` carries a `ratchet` object; the Tab-walk count wording says it counts ARIA-role widgets only; the Linux-only `/proc` reaping is documented.
 
 Fixes from the fourth roast review:

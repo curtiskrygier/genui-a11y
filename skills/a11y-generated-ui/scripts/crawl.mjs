@@ -42,7 +42,7 @@ while (queue.length && seen.size < MAX) {
   if (seen.has(url)) continue;
   if (!allowed(url)) { skipped.push(url + '  (robots.txt)'); continue; }
   try {
-    const resp = await go(page, url);
+    const resp = await go(page, url, { crawl: true });
     if (landedOnLinkLocal(page.url())) { skipped.push(url + '  (redirected to a link-local address)'); continue; }
     const type = (resp && resp.headers()['content-type']) || '';
     if (!/html/i.test(type)) continue;
