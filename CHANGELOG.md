@@ -1,12 +1,8 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-10-22)
 
-Release steps (maintainer):
-
-1. Merge `fix/roast-r2`, then cut the tag **v0.1.1** at the merge commit. `examples/ci/a11y-scan.yml` pins `A11Y_REF: v0.1.1`, so the CI example cannot install until this tag exists.
-2. Do **not** move or re-tag `v0.1.0`: it points at pre-hardening code. Say in its release notes that it is withdrawn and v0.1.1 replaces it.
-3. Replace "(unreleased)" with the release date.
+**v0.1.0 is withdrawn.** Its tag stays where it is, but it points at code from before the hardening below: use v0.1.1. `examples/ci/a11y-scan.yml` pins `A11Y_REF: v0.1.1`.
 
 Node older than the October 2026 security release (22.23.4, 24.22.1, 26.12.1) is refused with exit 3 (`A11Y_ALLOW_OLD_NODE=1` overrides); CI uses Node 24.
 
