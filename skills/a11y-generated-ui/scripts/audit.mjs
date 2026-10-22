@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, prepare, open, launchBrowser } from './lib.mjs';
+import { readInput, namesOf, prepare, open, launchBrowser, recover } from './lib.mjs';
 const require = createRequire(import.meta.url);
 const dir = process.argv[2];
 const dark = process.argv[3] === 'dark';
@@ -11,7 +11,7 @@ const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.
 const d = readInput(dir);
 const axeSrc = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const b = await launchBrowser(puppeteer, d);
-const page = await b.newPage();
+let page = await b.newPage();
 await prepare(page, d);
 const out = {};
 const names = namesOf(d);
@@ -47,7 +47,7 @@ for (const t of names) {
       new Promise((_, rej) => setTimeout(() => rej(new Error('axe timeout')), +(process.env.A11Y_AXE_TIMEOUT || 25000))),
     ]);
     res.v = ax.v; res.p = ax.p; res.inc = ax.inc;
-  } catch (e) { res.err = String(e.message).slice(0, 100); }
+  } catch (e) { res.err = String(e.message).slice(0, 100); page = await recover(b, page, d, e); }
   out[t] = res;
   n++;
   console.error('[' + n + '/' + names.length + '] ' + t + (res.err ? '  NOT AUDITED: ' + res.err : ''));

@@ -164,7 +164,8 @@ export async function launchBrowser(puppeteer, d) {
   const noSandbox = process.env.A11Y_NO_SANDBOX === '1';
   if (noSandbox) args.push('--no-sandbox');
   try {
-    const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args });
+    const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM || '/usr/bin/chromium', headless: 'new', args,
+      protocolTimeout: +(process.env.A11Y_PROTOCOL_TIMEOUT || 60000) });      // a page that pins its renderer fails this page in 60 s, not puppeteer's 180
     const close = browser.close.bind(browser);
     browser.close = async () => { try { await Promise.race([close(), new Promise(r => setTimeout(r, 10000))]); } finally { proxy.close(); } };   // proxy.close() also destroys sockets a page left open
     for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { browser.close().catch(() => {}).finally(() => process.exit(130)); });   // stopped from outside: take the browser down with us
@@ -286,6 +287,15 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
     Element.prototype.attachShadow = function (...a) { const r = as0.apply(this, a); try { obs.observe(r, OPTS); } catch (e) {} st.last = now(); return r; };
   } catch (e) {}
 };
+// After a page broke its tab (a renderer pinned by a busy script, a crashed target), every later call on that tab fails too: one bad page would
+// mark the rest of the run NOT AUDITED. So a tab that failed at the protocol level is closed and replaced by a fresh, prepared one.
+export async function recover(b, page, d, e) {
+  if (!/timed out|Session closed|Target closed|detached|Protocol error|crashed/i.test(String(e && e.message))) return page;
+  try { await Promise.race([page.close(), new Promise(r => setTimeout(r, 5000))]); } catch (_) {}
+  const fresh = await b.newPage();
+  await prepare(fresh, d);
+  return fresh;
+}
 export async function go(page, url, { crawl = false } = {}) {
   const nav = +(process.env.A11Y_NAV_TIMEOUT || 40000), full = +(process.env.A11Y_IDLE_TIMEOUT || 10000);
   const activityMs = +(process.env.A11Y_ACTIVITY_MS || 6000);

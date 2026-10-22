@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, rootSel, prepare, open, launchBrowser } from './lib.mjs';
+import { readInput, namesOf, rootSel, prepare, open, launchBrowser, recover } from './lib.mjs';
 const require = createRequire(import.meta.url);
 const [dir, theme, engine, only] = process.argv.slice(2);
 const d = readInput(dir);
@@ -12,7 +12,7 @@ const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.
 const src = engine === 'htmlcs' ? fs.readFileSync(require.resolve('html_codesniffer/build/HTMLCS.js'), 'utf8')
                                 : fs.readFileSync(require.resolve('accessibility-checker-engine/ace.js'), 'utf8');
 const b = await launchBrowser(puppeteer, d);
-const page = await b.newPage();
+let page = await b.newPage();
 await prepare(page, d);
 const names = only ? only.split(',') : namesOf(d);
 const ROOT = rootSel(d);
@@ -40,7 +40,7 @@ for (const t of names) {
       }, engine, ROOT),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), +(process.env.A11Y_NAV_TIMEOUT || 40000))),
     ]);
-  } catch (e) { res.err = String(e.message).slice(0, 120); }
+  } catch (e) { res.err = String(e.message).slice(0, 120); page = await recover(b, page, d, e); }
   out[t] = res;
 }
 await b.close();

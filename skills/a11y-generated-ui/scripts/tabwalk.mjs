@@ -3,7 +3,7 @@
 // Input: <dir>/html.json + shell.css (as audit.mjs). Output: <dir>/tabwalk.json  {atom: {stops:[...], findings:{rule:count}, composite_unreached:n}}
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, prepare, open, launchBrowser } from './lib.mjs';
+import { readInput, namesOf, prepare, open, launchBrowser, recover } from './lib.mjs';
 const dir = process.argv[2];
 const dark = process.argv[3] === 'dark';
 const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.css', 'utf8') : '';
@@ -14,7 +14,7 @@ const NEEDS_NAME = new Set(['button','link','checkbox','radio','textbox','search
 const CONTROLS = new Set(['button','link','checkbox','textbox','searchbox','combobox','listbox','slider','spinbutton','switch']);
 const COMPOSITE = new Set(['radio','tab','menuitem','menuitemcheckbox','menuitemradio','option','treeitem']);
 const b = await launchBrowser(puppeteer, d);
-const page = await b.newPage();
+let page = await b.newPage();
 await prepare(page, d);
 const cdp = await page.createCDPSession();
 await cdp.send('Accessibility.enable'); await cdp.send('DOM.enable');
@@ -82,7 +82,7 @@ for (const t of namesOf(d)) {
       if (dis || reachedBackend.has(n.backendDOMNodeId) || inNative.has(n.nodeId)) continue;
       if (CONTROLS.has(role)) add('unreachable_control', role + ' ' + String(val(n.name)).slice(0, 40)); else if (COMPOSITE.has(role)) res.composite_unreached++;
     }
-  } catch (e) { res.err = String(e.message).slice(0, 100); }
+  } catch (e) { res.err = String(e.message).slice(0, 100); page = await recover(b, page, d, e); }
   out[t] = res;
 }
 await b.close();
