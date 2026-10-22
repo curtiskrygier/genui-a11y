@@ -1,6 +1,6 @@
 # GitHub Actions: scan a built site on every pull request and fail the build below a minimum score.
 # Copy to .github/workflows/a11y-scan.yml. The scan is automated checks only (only a share of real issues): treat a pass as "no automated findings", not "accessible".
-# Not yet run end to end on a real repository: try it on a branch first.
+# Not yet run end to end on a real repository: try it on a branch first (the v0.1.1 tag must exist before it can install).
 name: Accessibility scan
 on:
   pull_request:
@@ -11,15 +11,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - uses: actions/setup-python@v5
         with: { python-version: '3.x' }
       - name: Build the site
         run: npm ci && npm run build            # replace with your build; the output folder is scanned below
       - name: Install the scanner
-        # Pin to a release tag (or a full commit SHA), never the default branch: this code runs in your CI.
+        # Pinned to a release tag, never the default branch: this code runs in your CI. The tag v0.1.1 is cut by the maintainer at release (see the
+        # CHANGELOG, "Release steps"). Do NOT use v0.1.0: it is pre-hardening code. For stricter pinning replace the tag with the full commit SHA of a commit you have read.
+        env: { A11Y_REF: v0.1.1 }
         run: |
-          git clone --depth 1 --branch v0.1.0 https://github.com/curtiskrygier/genui-a11y.git .a11y
+          git clone https://github.com/curtiskrygier/genui-a11y.git .a11y
+          git -C .a11y checkout --detach "$A11Y_REF"
           cd .a11y/skills/a11y-generated-ui/scripts && npm ci
       - name: Scan, score and gate
         # One scan: the JSON report is written to a file and the exit code gates the build.

@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Engines for the a11y-generated-ui skill: axe-core, HTML_CodeSniffer, IBM Equal Access, driven by headless Chromium.",
+  "engines": {
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
+  },
   "dependencies": {
     "puppeteer-core": "^25.3.0",
     "axe-core": "^4.14.0",

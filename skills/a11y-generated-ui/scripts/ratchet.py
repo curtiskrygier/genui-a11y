@@ -23,14 +23,17 @@ Static flags (own markup only):
   hidden_input_widget     a radio/checkbox hidden with display:none (the CSS radio trick): cannot take focus (WCAG 2.1.1)
   svg_no_name             an <svg> with no aria-hidden / role=img / label / <title> (WCAG 1.1.1)
 """
-import argparse, collections, functools, http.server, json, os, re, subprocess, sys, tempfile, threading, urllib.parse, urllib.request
+import argparse, collections, functools, http.server, json, os, re, shutil, subprocess, sys, tempfile, threading, urllib.parse, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+LOCAL_NAMES = ('localhost', '127.0.0.1', '::1')     # the same set as lib.mjs: hosts that are this machine and need no permission flag
 
 
 def load_items(src):
     p = Path(src)
+    if not p.exists():
+        sys.exit(f'--items {src}: no such file or folder')
     if p.is_dir():
         return {f.stem: f.read_text() for f in sorted(p.glob('*.html'))}
     d = json.loads(p.read_text())
@@ -128,7 +131,7 @@ def confined_handler(root):
 def check_public_host(host):
     """Refuse a host that resolves to a link-local or private address before this process fetches anything from it (the browser side has its own check in lib.mjs)."""
     import ipaddress, socket
-    if host in ('localhost', '127.0.0.1', '::1'):
+    if host in LOCAL_NAMES:
         return
     try:
         addrs = {ai[4][0].split('%')[0] for ai in socket.getaddrinfo(host, None)}
@@ -140,6 +143,8 @@ def check_public_host(host):
             ip = ip.ipv4_mapped
         if ip.is_link_local or host == 'metadata.google.internal':
             sys.exit(f'{host} resolves to a link-local address ({ad}): never scanned')
+        if ip.is_loopback or ip in ipaddress.ip_network('0.0.0.0/8') or ip.is_unspecified:      # 0.0.0.0, "0", ::, 127.x other than 127.0.0.1: the kernel routes these to this machine, so ALLOW_PRIVATE never opens them
+            sys.exit(f'{host} resolves to this machine ({ad}) under a name other than localhost / 127.0.0.1 / ::1: blocked')
         if (ip.is_private or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_reserved) and os.environ.get('A11Y_ALLOW_PRIVATE') != '1':
             sys.exit(f'{host} resolves to a private or special address ({ad}): blocked. Set A11Y_ALLOW_PRIVATE=1 to scan your own internal hosts.')
 
@@ -158,13 +163,67 @@ class JobTimeout(Exception):
     """The engine script ran past A11Y_JOB_TIMEOUT. Whatever it had already written to audit.json is kept."""
 
 
+def stop_run(p, profile):
+    """Stop node and everything it started. Puppeteer launches Chromium detached (its own process group), so killing node, or node's group, leaves
+    the browser running; it is found by the run's own --user-data-dir instead. SIGTERM first (node closes the browser), then SIGKILL."""
+    import signal, time
+
+    def browsers():
+        out = []
+        for d in Path('/proc').glob('[0-9]*'):
+            try:
+                if profile in (d / 'cmdline').read_bytes().decode('utf8', 'replace'):
+                    out.append(int(d.name))
+            except OSError:
+                pass
+        return out
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+        deadline = time.time() + 3
+        while time.time() < deadline and p.poll() is None:
+            time.sleep(0.05)
+        for pid in browsers():
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        if sig == signal.SIGTERM:
+            time.sleep(0.5)
+            if not browsers() and p.poll() is not None:
+                return
+    p.wait()
+
+
+TEMP = []        # this run's temp dir, removed on SIGTERM even when no engine is running
+ACTIVE = []      # (process, profile) of the engine scripts running now, so that being stopped from outside (the MCP server's timeout) can take them down too
+
+
+def _on_term(signum, frame):
+    for p, profile in list(ACTIVE):
+        stop_run(p, profile)
+        shutil.rmtree(Path(profile).parent, ignore_errors=True)      # the run's temp dir (scanned URLs, audit.json): os._exit skips the cleanup that a normal exit does
+    for t in TEMP:
+        shutil.rmtree(t, ignore_errors=True)
+    os._exit(143)
+
+
 def node(script, td, *extra):
     """Run an engine script. Its progress lines (stderr) are shown as they happen. A script that runs past A11Y_JOB_TIMEOUT seconds
     (default 7200) is stopped and JobTimeout is raised; audit.mjs writes audit.json as it goes, so the pages done so far are not lost."""
     env = dict(os.environ)
     if not (HERE / 'node_modules').exists() and 'NODE_PATH' not in env:
-        sys.exit(f'no node_modules next to {HERE}: run `npm install` there once')
-    p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env)
+        print(f'no node_modules next to {HERE}: run `npm ci` there once', file=sys.stderr)
+        sys.exit(3)      # 3 = the audit could not run; 1 is reserved for 'the score or the ratchet failed'
+    profile = str(Path(td) / 'chrome-profile')      # unique to this run: the Chromium that node starts carries it, so it can be found and stopped
+    env['A11Y_USER_DATA_DIR'] = profile
+    p = subprocess.Popen(['node', str(HERE / script), str(td), *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=HERE, env=env, start_new_session=True)
+    ACTIVE.append((p, profile))
+    if threading.current_thread() is threading.main_thread():
+        import signal
+        signal.signal(signal.SIGTERM, _on_term)      # SIGTERM from the MCP server: stop node and its Chromium, then go
     tail, chunks = collections.deque(maxlen=12), []
 
     def pump_err():
@@ -181,17 +240,23 @@ def node(script, td, *extra):
     try:
         p.wait(timeout=int(os.environ.get('A11Y_JOB_TIMEOUT', 7200)))
     except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
+        stop_run(p, profile)
+        ACTIVE[:] = [x for x in ACTIVE if x[0] is not p]
         for th in threads:
             th.join(2)
         raise JobTimeout(script)
     for th in threads:
         th.join(5)
+    stop_run(p, profile)        # a normal exit leaves nothing behind either
+    ACTIVE[:] = [x for x in ACTIVE if x[0] is not p]
     out = ''.join(chunks)
+    if p.returncode == 3 and tail:
+        print(f'{script} could not run (the reason is above)', file=sys.stderr)      # an engine's own refusal (e.g. an unpatched Node) is already printed
+        sys.exit(3)
     if p.returncode:
         msg = next((ln for ln in reversed(tail) if re.search(r'\bError: ', ln)), None)   # the one-line reason, not the stack trace
-        sys.exit(f'{script} failed: ' + (msg or '\n'.join(tail) or out)[-800:])
+        print(f'{script} failed: ' + (msg or '\n'.join(tail) or out)[-800:], file=sys.stderr)
+        sys.exit(3)
     return out.strip()
 
 
@@ -250,7 +315,7 @@ def grade_word(g):
 
 def score_page(res, flags, drop=frozenset(), applicable=None):
     """One page. Per layer: the weight of the rules that passed over the weight of those that applied; failures weigh by axe impact.
-    drop: check ids to treat as fixed (the what-if). Returns (score, layer scores, points lost per check, cap penalty)."""
+    drop: check ids to treat as fixed (the what-if). Returns (score, layer scores, points lost per check, cap penalty, severity class)."""
     tot_w, lost = collections.Counter(), collections.Counter()
     fail = []                                   # (check id, layer, weight)
     for p in res.get('p', []):
@@ -300,10 +365,14 @@ def site_score(inputs, drop=frozenset()):
     # The site rules count pages by what actually held them down (a critical or keyboard barrier, or a serious failure), not by their score:
     # a page at 68 from many minor issues is not a barrier, and a page at 84 with none of either is not "serious".
     blocked = sum(1 for p in scored if p[4] == 'blocking')
-    capped = sum(1 for p in scored if p[4] in ('blocking', 'serious'))
-    if blocked / len(scored) > 0.10:            # more than a tenth of pages with a barrier: not better than a C
+    capped = blocked + sum(1 for p in scored if p[4] == 'serious')
+    # A site cap comes from the share of pages AND from how many there are, so adding clean pages cannot dilute a real barrier away:
+    #   blocking pages: more than a tenth of the site, or three or more of them  -> not better than a C (69)
+    #                   any at all                                               -> not better than a B (84): no A while a keyboard or critical barrier exists
+    #   serious pages (blocking ones included): more than a quarter of the site  -> not better than a B (84)
+    if blocked / len(scored) > 0.10 or blocked >= 3:
         site = min(site, 69)
-    elif capped / len(scored) > 0.25:           # more than a quarter with any serious problem: not better than a B
+    elif blocked or capped / len(scored) > 0.25:
         site = min(site, 84)
     return site, pages
 
@@ -349,11 +418,13 @@ def build_report(audit, items, label, requested=None):
     capped = sum(1 for p in pages.values() if p[4] in ('blocking', 'serious'))
     rep = {'target': label, 'pages_scanned': len(pages), 'score': site, 'grade': grade(site), 'grade_word': grade_word(grade(site)),
             'points_lost_to_severity_caps': jr1(cap_total / n), 'fix_order': order,
-            'pages_with_severe_barriers': capped, 'pages_not_audited': errored,
+            'pages_with_severe_barriers': capped, 'pages_blocking': sum(1 for p in pages.values() if p[4] == 'blocking'), 'pages_not_audited': errored,
             'worst_pages': sorted(({'page': k, 'score': p[0]} for k, p in pages.items() if p[0] is not None), key=lambda x: x['score'])[:5],
             'needs_manual_review': dict(review.most_common(15)),        # axe 'incomplete': checks it could not decide; they are not in the score
             'layer_fallback_rules': sorted(FALLBACKS),           # rules whose layer came from the axe category because they had no WCAG criterion tag (normally empty)
             'pages_not_assessed': [k for k, p in pages.items() if p[0] is None],
+            'pages_slow': {k: v['slow'] for k, v in sorted(audit.items()) if v.get('slow')},     # never went quiet within A11Y_IDLE_TIMEOUT: audited as they stood, after waiting this many seconds
+            'pages_deadline': sorted(k for k, v in audit.items() if 'Navigation timeout' in str(v.get('err', ''))),   # hit A11Y_NAV_TIMEOUT: not audited (also in pages_not_audited)
             'failing_checks': sorted(info.values(), key=lambda e: (-e['points_lost'], -e['pages'])),
             'pages': {k: {'score': p[0], 'grade': grade(p[0]) if p[0] is not None else None, 'layers': p[1], 'static_flags': inputs[k][1]} for k, p in pages.items()}, 'note': BANNER}
     if requested is not None:
@@ -366,6 +437,41 @@ def build_report(audit, items, label, requested=None):
 
 def tot(d, rule):
     return sum(r.get(rule, 0) for r in d.values())
+
+
+def score_mode(a, audit, items, requested, ratchet=None):
+    """--score / --json / --min-score: print the report and return the exit code (0, 1 below --min-score, 3 low coverage)."""
+    rep = build_report(audit, items, a.url or a.sitemap or a.dir or a.urls or a.items, requested)
+    if rep['pages_scanned'] == 0:
+        print('no pages could be audited' + (f" ({len(rep['pages_not_audited'])} errored, {len(rep.get('pages_missing', []))} never finished)" if requested else ''), file=sys.stderr)
+        return 3
+    if a.json:
+        if ratchet is not None:
+            rep['ratchet'] = ratchet        # --baseline together with --json: the ratchet verdict (new and fixed findings) is part of the report
+        print(json.dumps(rep, indent=1))
+    else:
+        print(f"score {rep['score']}/100  grade {rep['grade']} ({rep['grade_word']})  {rep['pages_scanned']} of {rep.get('pages_requested', rep['pages_scanned'])} page(s)/item(s) scored" + ('' if rep.get('coverage', 100) >= 100 else f"  *** PARTIAL: {rep['coverage']}% covered ***"))
+        for k, p in sorted((kv for kv in rep['pages'].items() if kv[1]['score'] is not None), key=lambda kv: kv[1]['score'])[:12]:
+            print(f"  {p['score']:3d} {p['grade']:2s}  {k}  " + ' '.join(f'{L[:4]}={v}' for L, v in p['layers'].items()))
+        if rep['pages_not_audited']:
+            print(f"NOT AUDITED ({len(rep['pages_not_audited'])}): " + '; '.join(f'{k} [{e}]' for k, e in list(rep['pages_not_audited'].items())[:5]) + '  (the score covers only the pages that were audited)')
+        print(f"pages held down by a severe barrier: {rep['pages_with_severe_barriers']} (of which blocking, i.e. critical or keyboard: {rep['pages_blocking']})  [a site with any blocking page cannot score above 84; 3 or more, or over a tenth of the pages, cannot score above 69]")
+        print(f"points lost to severity caps (average per page): {rep['points_lost_to_severity_caps']}")
+        print('where the points went (average points lost per page; score gain if that check alone were fixed; pages hit):')
+        for e in rep['failing_checks'][:12]:
+            print(f"  {e['id']:30s} -{e['points_lost']:5.1f}  +{e['gain_if_fixed_alone']:<3d} {e['pages']:3d} page(s)  {e['impact'] or '':9s} {e['help'] or ''}" + (f"  {e['url']}" if e['url'] else ''))
+        print('fix order (assumes EVERY instance of a check is fixed; each step re-scores the whole site; fixing the top check alone can show +0 when another check still holds the same pages down):')
+        for i, s in enumerate(rep['fix_order'][:8], 1):
+            print(f"  {i}. fix {s['fix']:28s} {s['score_before']} -> {s['score_after']} ({s['grade_after']})")
+        print('NOTE: ' + BANNER)
+    if a.min_score is not None and rep.get('coverage', 100) < a.min_coverage and not a.allow_partial:
+        print(f"only {rep['coverage']}% of the requested pages were audited (--min-coverage {a.min_coverage}): the score is not trustworthy as a gate. "
+              "Raise A11Y_NAV_TIMEOUT / A11Y_JOB_TIMEOUT, scan in smaller batches, or pass --allow-partial.", file=sys.stderr)
+        return 3        # checked first: a low score on a handful of pages is not a verdict on the site
+    if a.min_score is not None and rep['score'] < a.min_score:
+        print(f"score {rep['score']} is below --min-score {a.min_score}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main():
@@ -401,6 +507,8 @@ def main():
     items = {} if live else load_items(a.items) if a.items else {}
     if not live and not items:
         sys.exit('give --items, or one of --url / --urls / --sitemap / --dir')
+    if a.shell and not Path(a.shell).is_file():
+        sys.exit(f'--shell {a.shell}: no such file')
     server = None
     urls = {}
     listed = []
@@ -426,7 +534,7 @@ def main():
         sm = urllib.parse.urlparse(a.sitemap)
         if sm.scheme not in ('http', 'https') or not sm.hostname:
             sys.exit('--sitemap must be an http(s) URL')
-        if sm.hostname not in ('localhost', '127.0.0.1', '::1') and not a.confirm_permission:
+        if sm.hostname not in LOCAL_NAMES and not a.confirm_permission:
             sys.exit(f'refusing to fetch the sitemap from {sm.hostname}: scan only sites you own or have permission to test, and say so with --confirm-permission')
         check_public_host(sm.hostname)
 
@@ -435,13 +543,25 @@ def main():
                 return None             # a redirect could point the fetch at an address the checks above never saw
         with urllib.request.build_opener(NoRedirect).open(a.sitemap, timeout=30) as resp:
             xml = resp.read(5_000_000).decode('utf8', 'replace')
-        listed.extend(re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml))
+        locs = re.findall(r'<loc>\s*([^<\s]+)\s*</loc>', xml)
+        def origin(u):
+            q = urllib.parse.urlparse(u)
+            try:
+                port = q.port or {'http': 80, 'https': 443}.get(q.scheme)
+            except ValueError:
+                port = None
+            return (q.hostname, port)
+        sm_origin = origin(a.sitemap)
+        listed.extend(u for u in locs if origin(u) == sm_origin)      # one --confirm-permission covers the sitemap's own host and port only (another port is another service)
+        other = sorted({'%s:%s' % origin(u) if origin(u)[0] else '?' for u in locs if origin(u) != sm_origin})
+        if other:
+            print(f'skipped {len(locs) - len(listed)} sitemap URL(s) on other host(s) or port(s) ({", ".join(other[:5])}): permission was for {sm.hostname}:{sm_origin[1]}. Scan them with their own --urls run.', file=sys.stderr)
     if listed:
         urls = keyed(listed)
     if live:
         hosts = {urllib.parse.urlparse(u).hostname for u in ([a.url] if a.url else []) + list(urls.values())}
-        if hosts - {'localhost', '127.0.0.1'} and not a.confirm_permission:
-            sys.exit('refusing to scan ' + ', '.join(sorted(h for h in hosts - {'localhost', '127.0.0.1'} if h)) + ': scan only sites you own or have permission to test, and say so with --confirm-permission')
+        if hosts - set(LOCAL_NAMES) and not a.confirm_permission:
+            sys.exit('refusing to scan ' + ', '.join(sorted(h for h in hosts - set(LOCAL_NAMES) if h)) + ': scan only sites you own or have permission to test, and say so with --confirm-permission')
     if a.static:
         c = collections.defaultdict(list)
         for k, h in sorted(items.items()):
@@ -453,14 +573,21 @@ def main():
         return 1 if c and not a.update and a.baseline and not Path(a.baseline).exists() else 0
     with tempfile.TemporaryDirectory() as t:
         td = Path(t)
+        TEMP.append(t)
         if live:
             if a.url and not a.crawl:
                 urls = {urllib.parse.urlparse(a.url).path or '/': a.url}
             if a.url and a.crawl:
-                print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages or 30), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
+                try:
+                    print(node('crawl.mjs', td, a.url, '--max', str(a.max_pages or 30), '--depth', str(a.depth), '--delay', str(a.delay), *(['--path-scope'] if a.path_scope else [])), file=sys.stderr)
+                except JobTimeout:
+                    print(f"the crawl ran past A11Y_JOB_TIMEOUT ({os.environ.get('A11Y_JOB_TIMEOUT', 7200)} s) and was stopped before it finished, so nothing was scanned. "
+                          "Raise A11Y_JOB_TIMEOUT, lower --max-pages / --depth, or list the pages with --urls.", file=sys.stderr)
+                    sys.exit(3)      # 3 = the audit could not run
                 urls = json.loads((td / 'html.json').read_text())['urls']
             if not urls:
-                sys.exit('no pages to scan')
+                print('no pages to scan', file=sys.stderr)
+                sys.exit(3)      # 3 = the audit could not run
             discovered = list(urls)
             if a.max_pages:
                 urls = dict(list(urls.items())[:a.max_pages])
@@ -473,24 +600,26 @@ def main():
             tw = json.loads((td / 'tabwalk.json').read_text())
             cur = {k: v['findings'] for k, v in tw.items() if v.get('findings')}
             tot_ = collections.Counter(rr for v in cur.values() for rr in v)
-            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}')
+            print(f'{len(tw)} items walked ({a.theme} page); items with a finding: {len(cur)}; by rule: {dict(tot_)}; composite widgets with an ARIA role (tab, menu, listbox, tree, ...) that Tab never reached (not findings; a clickable <span> or a hidden-input radio has no such role, so it is not counted here and is flagged by the static checks instead): {sum(v.get("composite_unreached", 0) for v in tw.values())}')
             for k, v in sorted(tw.items()):
                 for d in v.get('detail', [])[:3]:
                     print('  ', k, d[:140])
-            return 1 if cur else 0
+            tw_err = {k: v['err'] for k, v in tw.items() if v.get('err')}
+            if tw_err:
+                print(f"NOT WALKED ({len(tw_err)}): " + '; '.join(f'{k} [{e}]' for k, e in list(tw_err.items())[:5]) + '  (an item that could not be walked is not clean)', file=sys.stderr)
+            return 3 if tw_err else 1 if cur else 0      # the worse code wins: an item that could not be walked makes the result incomplete
         if a.crosscheck:
             print(node('audit.mjs', td, a.theme))
             for eng in ('htmlcs', 'ibm'):
                 print(node('crosscheck.mjs', td, a.theme, eng, a.only))
             r = subprocess.run([sys.executable, str(HERE / 'crosscheck_report.py'), str(td), '--theme', a.theme], capture_output=True, text=True)
             print(r.stdout or r.stderr)
-            return 0
+            return 1 if r.returncode == 1 else 3 if r.returncode else 0      # 1: engines agree on a finding; 3: the comparison itself failed
         timed_out = False
         try:
             print(node('audit.mjs', td, a.theme), file=sys.stderr)    # progress goes to stderr so that --json output stays pure JSON
         except JobTimeout:
             timed_out = True
-            print('STOPPED: the audit ran past A11Y_JOB_TIMEOUT; the score below covers only the pages finished so far.', file=sys.stderr)
         audit = json.loads((td / 'audit.json').read_text()) if (td / 'audit.json').exists() else {}
         _h = json.loads((td / 'html.json').read_text())
         requested = list(_h.get('urls', _h.get('html', {})))
@@ -499,6 +628,22 @@ def main():
     cur = {'axe': {}, 'static': {}}
     pairs = collections.defaultdict(list)
     errors = [k for k, v in audit.items() if 'err' in v]
+    missing = [k for k in requested if k not in audit]      # asked for, never reached (the run was stopped): not audited, so never 'unchanged'
+    deadline = [k for k, v in audit.items() if 'Navigation timeout' in str(v.get('err', ''))]
+    slow = {k: v['slow'] for k, v in audit.items() if v.get('slow')}
+    if deadline:
+        print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
+    if slow:
+        print(f"{len(slow)} page(s) never went idle (a request still waiting for its answer, a one-shot timer still pending, or content that keeps changing, such as a ticking clock) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
+              f"({int(os.environ.get('A11Y_IDLE_TIMEOUT', 10000)) // 1000} s) each: {', '.join(f'{k} ({s_} s)' for k, s_ in list(slow.items())[:5])}{'...' if len(slow) > 5 else ''}. "
+              "Lower A11Y_IDLE_TIMEOUT to scan such pages faster; content that appears after the wait is not audited.", file=sys.stderr)
+    if timed_out:
+        limit = os.environ.get('A11Y_JOB_TIMEOUT', 7200)
+        if missing:
+            print(f"STOPPED: the audit ran past A11Y_JOB_TIMEOUT ({limit} s) with {len(missing)} of {len(requested)} page(s) not audited: {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}."
+                  + ('' if (a.baseline and not scoring_requested(a)) else ' The score covers only the pages that were audited.'), file=sys.stderr)
+        else:
+            print(f"note: the engine did not exit within A11Y_JOB_TIMEOUT ({limit} s) although all {len(requested)} page(s) were audited; the results are complete and were stopped from outside.", file=sys.stderr)
     for k, v in sorted(audit.items()):
         rules = {x['id']: x['nodes'] for x in v.get('v', [])}
         for x in v.get('v', []):
@@ -513,35 +658,31 @@ def main():
         server.shutdown()
     if a.audit_out:
         Path(a.audit_out).write_text(json.dumps({'audit': audit, 'items': items}))
-    if a.score or a.json or a.min_score is not None:
-        rep = build_report(audit, items, a.url or a.sitemap or a.dir or a.urls or a.items, requested)
-        if rep['pages_scanned'] == 0:
-            print('no pages could be audited' + (f" ({len(rep['pages_not_audited'])} errored, {len(rep.get('pages_missing', []))} never finished)" if requested else ''), file=sys.stderr)
-            return 3
-        if a.json:
-            print(json.dumps(rep, indent=1))
-        else:
-            print(f"score {rep['score']}/100  grade {rep['grade']} ({rep['grade_word']})  {rep['pages_scanned']} of {rep.get('pages_requested', rep['pages_scanned'])} page(s)/item(s) scored" + ('' if rep.get('coverage', 100) >= 100 else f"  *** PARTIAL: {rep['coverage']}% covered ***"))
-            for k, p in sorted((kv for kv in rep['pages'].items() if kv[1]['score'] is not None), key=lambda kv: kv[1]['score'])[:12]:
-                print(f"  {p['score']:3d} {p['grade']:2s}  {k}  " + ' '.join(f'{L[:4]}={v}' for L, v in p['layers'].items()))
-            if rep['pages_not_audited']:
-                print(f"NOT AUDITED ({len(rep['pages_not_audited'])}): " + '; '.join(f'{k} [{e}]' for k, e in list(rep['pages_not_audited'].items())[:5]) + '  (the score covers only the pages that were audited)')
-            print(f"points lost to severity caps (average per page): {rep['points_lost_to_severity_caps']}")
-            print('where the points went (average points lost per page; score gain if that check alone were fixed; pages hit):')
-            for e in rep['failing_checks'][:12]:
-                print(f"  {e['id']:30s} -{e['points_lost']:5.1f}  +{e['gain_if_fixed_alone']:<3d} {e['pages']:3d} page(s)  {e['impact'] or '':9s} {e['help'] or ''}" + (f"  {e['url']}" if e['url'] else ''))
-            print('fix order (assumes EVERY instance of a check is fixed; each step re-scores the whole site; fixing the top check alone can show +0 when another check still holds the same pages down):')
-            for i, s in enumerate(rep['fix_order'][:8], 1):
-                print(f"  {i}. fix {s['fix']:28s} {s['score_before']} -> {s['score_after']} ({s['grade_after']})")
-            print('NOTE: ' + BANNER)
-        if a.min_score is not None and rep.get('coverage', 100) < a.min_coverage and not a.allow_partial:
-            print(f"only {rep['coverage']}% of the requested pages were audited (--min-coverage {a.min_coverage}): the score is not trustworthy as a gate. "
-                  "Raise A11Y_NAV_TIMEOUT / A11Y_JOB_TIMEOUT, scan in smaller batches, or pass --allow-partial.", file=sys.stderr)
-            return 3        # checked first: a low score on a handful of pages is not a verdict on the site
-        if a.min_score is not None and rep['score'] < a.min_score:
-            print(f"score {rep['score']} is below --min-score {a.min_score}", file=sys.stderr)
-            return 1
-        return 0
+    scoring = scoring_requested(a)
+    if scoring:
+        if not a.baseline:
+            return score_mode(a, audit, items, requested)
+        out = sys.stderr if a.json else sys.stdout      # --json: stdout stays one JSON document, so the ratchet's text goes to stderr
+        res = {}
+        if a.json:      # the ratchet runs first so that its result can go into the JSON report
+            print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
+            rrc = ratchet_mode(a, audit, cur, errors, missing, pairs, out, res)
+            res['exit'] = rrc
+            return max(score_mode(a, audit, items, requested, res), rrc)
+        rc = score_mode(a, audit, items, requested)
+        print('--- baseline ratchet (--baseline was given together with the score options, so both run; the worse exit code wins) ---', file=out)
+        return max(rc, ratchet_mode(a, audit, cur, errors, missing, pairs, out))
+    return ratchet_mode(a, audit, cur, errors, missing, pairs)
+
+
+def scoring_requested(a):
+    return a.score or a.json or a.min_score is not None
+
+
+def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None, result=None):
+    out = out or sys.stdout
+    import builtins
+    print = functools.partial(builtins.print, file=out)
     print(f"{len(audit)} items audited ({a.theme} page), {len(errors)} errors; axe violations in {len(cur['axe'])} items, static flags in {len(cur['static'])}")
     if a.report or not a.baseline:
         c = collections.Counter(r for rules in cur['axe'].values() for r in rules)
@@ -551,8 +692,16 @@ def main():
             print(f'    {fg} on {bg}  nodes={len(lst):3d} items={len({x for x, _ in lst}):3d} ratio={lst[0][1]}')
         for f_, k in collections.Counter(f for fl in cur['static'].values() for f in fl).most_common():
             print(f'  {f_:32s} {k:4d} items')
+        if (errors or missing) and len(errors) >= len(audit):
+            print('no page could be audited: the breakdown above is empty, not clean', file=sys.stderr)
+            return 3       # 3 = the audit could not run
         return 0
     base_path = Path(a.baseline)
+    if missing:
+        print(f"{len(missing)} of the requested item(s) were never audited (the run was stopped, e.g. by A11Y_JOB_TIMEOUT): {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}. "
+              "A ratchet over a partial run would call them unchanged" + (', and --update would write a baseline that drops them' if a.update else '') + ". "
+              "Raise A11Y_JOB_TIMEOUT or scan in smaller batches.", file=sys.stderr)
+        return 3
     if errors and not a.update:
         print(f"{len(errors)} item(s) could not be audited ({', '.join(errors[:5])}{'...' if len(errors) > 5 else ''}): a ratchet that skips them would call them fixed. "
               "Fix the audit (see the errors above) and run again.", file=sys.stderr)
@@ -594,6 +743,8 @@ def main():
         print('  NEW  ', x)
     if fixed:
         print(f'  ({len(fixed)} fixed; run with --update to lock the gain in)')
+    if result is not None:
+        result.update(new=new, fixed=fixed)
     return 1 if new else 0
 
 

@@ -7,6 +7,14 @@ Three engines are three opinions, not a verdict. Where two or more agree an item
 look by hand (axe cannot evaluate text over gradients; HTMLCS contrast needs a computable background; IBM is stricter on form patterns)."""
 import collections, json, re, sys
 from pathlib import Path
+# Exit codes: 0 no finding that two or more engines agree on, 1 at least one such finding, 2 the comparison itself failed (a missing or unreadable engine
+# output, a crash). A crash must not look like "the engines agree", which is also what a plain Python traceback would exit with (1).
+def _crash(et, ev, tb):
+    import traceback
+    traceback.print_exception(et, ev, tb)
+    sys.stderr.flush(); sys.stdout.flush()
+    import os; os._exit(2)
+sys.excepthook = _crash
 d = Path(sys.argv[1])
 theme = 'dark' if '--theme' in sys.argv and sys.argv[sys.argv.index('--theme') + 1] == 'dark' else 'light'
 show = sys.argv[sys.argv.index('--list') + 1] if '--list' in sys.argv else None
@@ -38,3 +46,8 @@ if show:
     s = {e: flag[e][show] for e in flag}
     print(f'\n{show}: item -> engines that flag it')
     for a in sorted(set().union(*s.values())): print('  ', f'{a:30s}', ','.join(e for e in s if a in s[e]))
+
+# Exit code: 1 when two or more engines flag the same item in the same category (very likely a real finding); 0 otherwise. ratchet.py --crosscheck passes it on.
+agreed = sum(1 for cat in ('contrast', 'name', 'other') for a in set().union(*(flag[e][cat] for e in flag)) if sum(a in flag[e][cat] for e in flag) >= 2)
+print(f'findings that >= 2 engines agree on: {agreed}')
+sys.exit(1 if agreed else 0)

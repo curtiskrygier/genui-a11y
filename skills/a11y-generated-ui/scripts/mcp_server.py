@@ -9,7 +9,7 @@ A11Y_ALLOW_REMOTE=1 set by whoever starts the server: an agent can set the first
 addresses (169.254.0.0/16, fe80::/10) are never scanned, and private ranges are blocked unless the human sets A11Y_ALLOW_PRIVATE=1. A target that is not a folder under the
 current directory (or A11Y_SCAN_ROOT) is refused. The server runs on your machine with your network access.
 """
-import ipaddress, json, os, signal, socket, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
+import ipaddress, json, os, re, signal, socket, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -27,7 +27,7 @@ def bounded(a, key, default, lo, hi):
         raise ValueError(f'{key} must be between {lo} and {hi}')
     return int(v)
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 STATIC_HELP = {
     'click_not_keyboard': 'A non-interactive element (span, div) has a click handler but no role and tabindex, so a keyboard user cannot operate it (WCAG 2.1.1). Use a real <button> or <a>, or add role, tabindex="0" and Enter/Space handling.',
@@ -46,7 +46,7 @@ TOOLS = [
          'theme': {'type': 'string', 'enum': ['light', 'dark'], 'description': 'Colour scheme to request (default light)'},
          'confirm_permission': {'type': 'boolean', 'description': 'Required for any host other than localhost: true only if you own the site or have permission to test it'}},
          'required': ['target']}},
-    {'name': 'scan_status', 'description': 'Status of a scan job: running, done or failed.', 'inputSchema': {'type': 'object', 'properties': {'job_id': {'type': 'string'}}, 'required': ['job_id']}},
+    {'name': 'scan_status', 'description': 'Status of a scan job: running, done or failed, with progress (pages done / pages) while it runs.', 'inputSchema': {'type': 'object', 'properties': {'job_id': {'type': 'string'}}, 'required': ['job_id']}},
     {'name': 'scan_result', 'description': 'The finished report: score 0-100, grade (always "automated findings", never "accessible"), four layer scores, worst pages, failing checks with the points each cost and the score gain if fixed alone, a greedy fix_order (which fixes raise the score most), and the coverage note. Say that note to the user.',
      'inputSchema': {'type': 'object', 'properties': {'job_id': {'type': 'string'}, 'max_checks': {'type': 'integer', 'minimum': 1, 'maximum': 50, 'description': 'How many failing checks to include (default 15)'}}, 'required': ['job_id']}},
     {'name': 'explain_check', 'description': 'Plain-language meaning and fix for one failing check id from a scan (an axe rule such as color-contrast, or one of the static checks).',
@@ -66,9 +66,11 @@ def check_target(target, confirm):
             ip = ipaddress.ip_address(a.split('%')[0])
             if ip.is_link_local or host == 'metadata.google.internal':
                 raise ValueError(f'{host} resolves to a link-local address ({a}); never scanned')
+            if ip.is_unspecified or ip in ipaddress.ip_network('0.0.0.0/8'):
+                raise ValueError(f'{host} resolves to {a}, which the kernel routes to this machine: blocked')
             if (ip.is_private and not ip.is_loopback) and os.environ.get('A11Y_ALLOW_PRIVATE') != '1':
                 raise ValueError(f'{host} resolves to a private address ({a}); blocked. Whoever starts this server can allow internal hosts with A11Y_ALLOW_PRIVATE=1')
-            if ip.is_loopback and host not in ('localhost', '127.0.0.1', '::1'):
+            if ip.is_loopback and host not in ('localhost', '127.0.0.1', '::1'):     # 127.0.0.2 and friends
                 raise ValueError(f'{host} resolves to a loopback address; blocked')
         if not all(ipaddress.ip_address(a.split('%')[0]).is_loopback for a in addrs):
             if os.environ.get('A11Y_ALLOW_REMOTE') != '1':
@@ -86,6 +88,12 @@ def check_target(target, confirm):
     raise ValueError('target must be an http(s) URL or an existing folder')
 
 
+def progress_of(line):
+    """'12/70' from an engine progress line like '[12/70] /page', else None."""
+    m = re.match(r'\s*\[(\d+)/(\d+)\]', line)
+    return f'{m.group(1)}/{m.group(2)}' if m else None
+
+
 def run_job(job, args):
     proc = None
     try:
@@ -101,16 +109,38 @@ def run_job(job, args):
             cmd += ['--dir', arg]
         job['phase'] = 'scanning'
         limit = int(os.environ.get('A11Y_JOB_TIMEOUT', 1800)) + 120
-        # its own process group, so a timeout kills Chromium and the helper scripts too, not just the Python parent
+        # ratchet.py runs in its own process group, but node and Chromium run in sessions of their own (ratchet starts them that way), so killing the group
+        # does not reach them. On a timeout ratchet gets SIGTERM first: it stops its node and the Chromium found by the run's own --user-data-dir, then exits.
+        # The group kill afterwards is only the backstop for ratchet itself.
         env = {**os.environ, 'A11Y_JOB_TIMEOUT': os.environ.get('A11Y_JOB_TIMEOUT', '1800')}      # an agent-started scan stops after 30 minutes unless the human who runs the server allows more
         proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True)   # never let the scan read the MCP stream
         job['pgid'] = proc.pid
+        err_lines = []
+
+        def pump_err():      # scan_status shows progress: the engine prints [n/N] per page on stderr
+            for line in proc.stderr:
+                err_lines.append(line)
+                p_ = progress_of(line)
+                if p_:
+                    job['progress'] = p_
+        t_err = threading.Thread(target=pump_err, daemon=True)
+        t_err.start()
         try:
-            out, err = proc.communicate(timeout=limit)
+            out = proc.communicate(timeout=limit)[0]
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            proc.terminate()                          # ratchet's handler stops node and Chromium before it exits
+            try:
+                proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)   # backstop for ratchet and any helper left in its group
+            except OSError:
+                pass
             proc.communicate()
             raise RuntimeError(f'scan stopped after {limit} s')
+        t_err.join(5)
+        err = ''.join(err_lines)
         if '{' not in out:
             raise RuntimeError((err or out)[-400:] or 'scan produced no report')
         job['report'] = json.loads(out[out.index('{'):])
@@ -138,7 +168,7 @@ def call_tool(name, a):
         j = JOBS.get(a.get('job_id'))
         if not j:
             raise ValueError('unknown job_id')
-        return {'job_id': a['job_id'], 'status': j['status'], 'phase': j.get('phase'), 'seconds': round(time.time() - j['started']), 'error': j.get('error')}
+        return {'job_id': a['job_id'], 'status': j['status'], 'phase': j.get('phase'), 'progress': j.get('progress'), 'seconds': round(time.time() - j['started']), 'error': j.get('error')}
     if name == 'scan_result':
         j = JOBS.get(a.get('job_id'))
         if not j:

@@ -4,29 +4,34 @@
 
 (a11y = accessibility.) Accessibility checks and balances for AI generated UI. The skill in this repo is called `a11y-generated-ui`.
 
-**Status:** early (0.1.0), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
+**Status:** early (0.1.1), one author. It has been run on one 650-component catalogue, that catalogue's 593-page site, and two public W3C demo sites. Nobody outside the author has used it yet; [that is the open question](#try-it-and-tell-me).
 
 [Quick start](#quick-start) · [Use with an agent](#use-with-an-agent-mcp) · [Options](#options-and-exit-codes) · [What it does not do](#what-it-does-not-do) · [How far to trust the score](#how-far-to-trust-the-score) · [Alternatives](#alternatives) · [Safety](#safety-defaults)
 
 ## Demo
 
-Nine sample components, six of them with a planted defect. This is the real output of the quick start below, trimmed:
+Nine sample components, six of them with a planted defect. This is the real output of the quick start below, trimmed (a test, `tests/test_roast_r2.py`, checks that these lines still match what it prints):
 
 ```text
 score 69/100  grade C (many automated findings)  9 of 9 page(s)/item(s) scored
-   65 C   click_on_span      perc=100 oper=0   unde=100 robu=100
-   65 C   css_radio_tabs     perc=100 oper=0   unde=100 robu=100
-   68 C   canvas_no_alt      perc=40  unde=100 robu=100
-   68 C   unnamed_svg        perc=40  unde=100 robu=100
-  100 A   ok_button          perc=100 oper=100 unde=100 robu=100
-fix order (assumes EVERY instance of a check is fixed; each step re-scores the whole site):
+   69 C   click_on_span  perc=100 oper=40 unde=100
+   69 C   css_radio_tabs  perc=100 oper=40 unde=100 robu=100
+   79 B   endless_spinner  perc=100 oper=40 unde=100 robu=100
+   82 B   canvas_no_alt  perc=57 oper=100 unde=100
+   82 B   unnamed_svg  perc=57 oper=100 unde=100
+   84 B   low_contrast_text  perc=67 oper=100 unde=100
+  100 A   ok_button  perc=100 oper=100 unde=100 robu=100
+pages held down by a severe barrier: 3 (of which blocking, i.e. critical or keyboard: 2)  [a site with any blocking page cannot score above 84; 3 or more, or over a tenth of the pages, cannot score above 69]
+fix order (assumes EVERY instance of a check is fixed; each step re-scores the whole site; ...):
   1. fix click_not_keyboard           69 -> 69 (C)
-  2. fix hidden_input_widget          69 -> 85 (B)
-  3. fix loop_no_reduced_motion       85 -> 89 (B)
-  4. fix canvas_no_text_alt           89 -> 93 (A)
-  5. fix color-contrast               93 -> 96 (A)
-  6. fix svg_no_name                  96 -> 100 (A)
+  2. fix hidden_input_widget          69 -> 92 (A)
+  3. fix loop_no_reduced_motion       92 -> 94 (A)
+  4. fix canvas_no_text_alt           94 -> 96 (A)
+  5. fix svg_no_name                  96 -> 98 (A)
+  6. fix color-contrast               98 -> 100 (A)
 ```
+
+The sample `unlabelled_input` also scores 100 A: axe accepts a placeholder as a name. Run `--crosscheck` to see HTML_CodeSniffer and IBM Equal Access flag it.
 
 A clean result means "no automated violations", never "accessible". Automated checks find only a share of real problems, and nothing here tests screen-reader output or involves disabled people.
 
@@ -43,7 +48,7 @@ It also scans ordinary sites (a built folder, a running site, a sitemap). That w
 
 ## Quick start
 
-**You need:** Node 20+, Python 3, and a Chromium or Chrome (`sudo apt install chromium` on Debian or Ubuntu; set `CHROMIUM=/path` if it is not at `/usr/bin/chromium`).
+**You need:** Node 22.23.4+, 24.22.1+ or 26.12.1+ (the October 2026 security release; older Node is refused), Python 3, and a Chromium or Chrome (`sudo apt install chromium` on Debian or Ubuntu; set `CHROMIUM=/path` if it is not at `/usr/bin/chromium`).
 
 ```bash
 git clone https://github.com/curtiskrygier/genui-a11y.git
@@ -104,17 +109,19 @@ As a Claude Code plugin the repo registers the server itself via [`.mcp.json`](.
 |---|---|---|
 | `--items FILE`, `--dir DIR`, `--url URL`, `--urls FILE`, `--sitemap URL` | none (give one) | what to audit |
 | `--score` / `--json` | off | score 0 to 100 with grade, layers, points lost per check, fix order / the same as JSON |
-| `--min-score N` | none | exit 1 below N |
+| `--min-score N` | none | exit 1 below N. Combined with `--baseline`, both run (the score, then the ratchet) and the worse exit code wins |
 | `--min-coverage PCT`, `--allow-partial` | 90 | with `--min-score`: exit 3 if fewer than PCT of the requested pages could be audited |
 | `--baseline FILE`, `--update` | none | the ratchet; a missing baseline is an error unless you pass `--update` |
 | `--max-pages N` | 30 for `--crawl`; no cap for `--dir`, `--urls`, `--sitemap` | page cap; pages beyond a cap you set count as not audited |
 | `--theme light\|dark` | light | colour scheme to request |
-| `--tabwalk`, `--crosscheck` | off | separate modes (Tab key walk; HTML_CodeSniffer and IBM Equal Access cross-check); they print findings and set the exit code but do not feed the score |
+| `--tabwalk`, `--crosscheck` | off | separate modes (Tab key walk; HTML_CodeSniffer and IBM Equal Access cross-check); they print findings and set the exit code (1 on a finding; for `--crosscheck`, a finding two or more engines agree on; if the comparison itself crashes, `crosscheck_report.py` exits 2 and `ratchet.py --crosscheck` passes it on as 3, so a crash never looks like "the engines agree") but do not feed the score |
 | `A11Y_JOB_TIMEOUT` | 7200 s | stop a run and score the pages finished so far |
-| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | 40000, 25000 ms | per page load and per axe run; raise for very heavy pages |
+| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | 40000, 25000 ms | per page until its DOM is parsed (a page past it is not audited; the settle wait below comes after it) and per axe run; raise for very heavy pages |
+| `A11Y_PROTOCOL_TIMEOUT` | 60000 ms | how long one browser call may take before the page is marked NOT AUDITED and its tab is replaced (a page whose script pins the CPU); raise for very heavy pages |
+| `A11Y_IDLE_TIMEOUT`, `A11Y_SETTLE_MS` | 10000, 1500 ms | live URLs: after load, the page must be quiet (no request awaiting a response, no short timer pending, no DOM change) for `A11Y_SETTLE_MS` before it is audited, so content rendered after a slow fetch or a timer is seen; `A11Y_IDLE_TIMEOUT` bounds that wait, and a page that never settles is audited as it stands and named in the report. Content that appears later than the bound is not audited; raise it for slow apps, set `A11Y_SETTLE_MS=0` to skip the quiet window. Activity is waited on for a while, content for longer. Activity (an open WebSocket, EventSource or Worker, a `setInterval` or a re-armed timer, a `requestAnimationFrame` loop, an attribute change such as `style` or `class` on an element that has already changed 3 times) holds the wait for at most `A11Y_ACTIVITY_MS` (6000 ms) after load: an AI answer that streams in, a job-status poll or an intro animation that ends in a reveal within that time is waited for; an endless carousel or animation is waited on for `A11Y_ACTIVITY_MS` (6 s) instead of the full bound: in our tests a carousel page took about 13 s in all (load, the activity wait and the quiet window) against about 5 s for a static page. A timer counts as a loop when the same function or the same line of code arms it again with the same delay, or when a timer callback re-arms its own delay; a render that such a repeat produces later than 6 s after load is not waited for, and that includes one-shot steps that happen to share a line and a delay (a polling loop with `await sleep(1000)`, or a step-by-step demo that does `await sleep(2000)` before each step): raise `A11Y_ACTIVITY_MS` (for example to 9000) for such pages. A loop whose delay changes every time (random jitter, back-off) is not recognised as a loop and waits the full bound instead (cost only). Content always counts, up to the full bound: an element or text that is added or changed (also inside shadow roots), a fetch whose body is still arriving, a pending one-shot timer or `scheduler.postTask`. So a page whose content keeps changing (a ticking clock, a live feed) waits the full bound and is listed in `pages_slow` (in `--json` and the MCP report); lower `A11Y_IDLE_TIMEOUT` for such sites (that also stops the wait for timers longer than the new bound). Content that arrives after a silent stream or poll longer than `A11Y_ACTIVITY_MS` is not audited: raise it for slow AI answers. Same-origin iframes are audited with the page and their late content is waited for; cross-origin and sandboxed (opaque-origin) iframes are not audited (axe only talks to frames of the page's own origin), so audit such a frame's URL on its own. Such a frame does not hold the wait either; a frame that never finishes loading makes its whole page NOT AUDITED. The crawl waits for new elements only, so text changes and activity cost nothing there and are paid once, in the audit. An idle live-reload socket, Worker or keep-alive interval still counts as activity and adds up to `A11Y_ACTIVITY_MS` to each page. The quiet window costs every page about `A11Y_SETTLE_MS` in the crawl and again in the audit; set `A11Y_SETTLE_MS=0` only when no content renders late |
 | `A11Y_NO_SANDBOX=1`, `A11Y_ALLOW_PRIVATE=1` | off | see [Safety](#safety-defaults) |
 
-Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a baseline), **3** the audit could not be trusted (too little coverage, items that could not be audited, no pages, or a missing baseline). Progress prints as pages finish and results are saved as they go, so a timeout keeps what finished and the headline says `PARTIAL`. Full details: [`SKILL.md`](skills/a11y-generated-ui/SKILL.md).
+Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a baseline), **3** the audit could not be trusted (too little coverage, items that could not be audited or were never reached, no pages, a missing baseline, a missing Chromium or `node_modules`, or an engine crash). A ratchet run cut short by `A11Y_JOB_TIMEOUT` exits 3 and `--update` refuses to write a baseline from it. Progress prints as pages finish and results are saved as they go, so a timeout keeps what finished and the headline says `PARTIAL`. Full details: [`SKILL.md`](skills/a11y-generated-ui/SKILL.md).
 
 ## What it does not do
 
@@ -122,12 +129,13 @@ Exit codes: **0** ok, **1** score below `--min-score` (or new findings against a
 - It does not log in, follow single-page-app routes, or test states that need interaction beyond the Tab walk.
 - The static checks are regexes over HTML. They miss some barriers (a listener added by script) and flag some non-barriers. A flag is a prompt to look; a clean result is not proof.
 - It does not cover every WCAG 2.2 success criterion. Selecting A and AA tags in axe is not criterion-level coverage.
-- The Tab walk reports heuristics (focus-style differences, a stop limit of 60). It does not prove a keyboard trap or a missing focus indicator.
+- The Tab walk reports heuristics (focus-style differences, a stop limit of 60). It does not prove a keyboard trap or a missing focus indicator. It does not report a clickable `<span>` or a CSS-only radio tab set that Tab never reaches (it prints how many composite widgets it never reached, not which are defective).
+- Known limitations: a page whose own `Error.prepareStackTrace` throws cannot have its timer loops recognised by calling line, so a `sleep()`-style polling loop on such a page waits the full `A11Y_IDLE_TIMEOUT` (time only; the audit is still correct); a page that defines a global named `origin` (a top-level `var origin` or `function origin`) hides its frames' real origin, so their content is neither audited by axe nor waited for; the settle probe wraps `WebSocket`, `EventSource` and `Worker` in subclasses, so their own property descriptors, `length` and `toString()` differ from the native ones (instances, statics, `readyState`, `binaryType` and prototype patching behave as native);  stopping a run (timeout, or SIGTERM from the MCP server) finds the run's Chromium through `/proc`, so that cleanup works on Linux only; on macOS and Windows a Chromium that outlives its node process is not reaped (the run's temp dir is still removed); the engines were tested on Chromium 153 (the version in use is printed as `browser: ...` on stderr; other versions are untested); the MCP `scan_status` progress shows pages done, not a time estimate; the vetting proxy has no authentication (it listens on 127.0.0.1 only; it times out a connect after 10 s and an idle socket after 60 s, `A11Y_PROXY_CONNECT_TIMEOUT` and `A11Y_PROXY_IDLE_TIMEOUT`); in live mode Chromium's own background requests go through the proxy to public hosts.
 - Performance, SEO and best-practice audits are out of scope.
 
 ## How far to trust the score
 
-It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures, so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time, and the **failing checks and the fix order** to decide work. Do not compare scores between sites, and do not quote one as a conformance claim. It is a secondary summary; the baseline and the fix order are the point.
+It is a scale this project made up. The four layer weights (35/35/15/15), the severity caps (59, 69 and 84) and the grade cut-offs (90/75/55/35) are judgement calls, not a standard, and the caps do most of the work: a site is held at 69 or 84 until enough pages are free of serious failures (a site with any page held down by a critical or keyboard barrier cannot reach an A however many clean pages it has, and three such pages, or more than a tenth of the site, hold it at 69), so a real improvement can show as no change, and one shared defect can move the whole site by 25 points. Use the score to track one site over time, and the **failing checks and the fix order** to decide work. Do not compare scores between sites, and do not quote one as a conformance claim. It is a secondary summary; the baseline and the fix order are the point.
 
 Layers follow the WCAG principle of each rule's success criterion. An earlier version grouped by axe's own categories, which put 31 of the 68 rules it runs in a different layer from their principle; the site scores on every dataset below were identical under both, because the caps decide them, but the per-layer numbers moved (for example Perceivable 66 to 72 on the 8 October catalogue).
 
@@ -161,9 +169,10 @@ A scan loads someone's page and runs its scripts, so:
 
 - The Chromium sandbox is **on**. Containers and some CI images cannot create it; there, set `A11Y_NO_SANDBOX=1`, and only for content you trust, because a page that escapes an unsandboxed Chromium runs as you.
 - Every request the browser makes, including redirects and subresources, is checked. Link-local and cloud-metadata addresses are never reached. Private and special-use ranges (10/8, 172.16/12, 192.168/16, 100.64/10, multicast, fc00::/7, Teredo and others) are blocked unless you set `A11Y_ALLOW_PRIVATE=1`. Addresses are parsed to bytes, so every form that wraps an IPv4 address (IPv4-mapped, NAT64, 6to4) is judged by the IPv4 inside it.
-- Loopback is reachable only at the exact origin being scanned: a local build on `127.0.0.1:8777` can load its own files, and a remote page cannot probe your localhost or another local port.
-- Only http, https, data, blob and about URLs are allowed; WebSockets, file and ftp are blocked and service workers are bypassed. The `robots.txt` and sitemap fetches do not follow redirects.
-- The address checked for each *starting* host is the address pinned for the browser. Redirect and subresource hosts are checked per request but not pinned, so a hostile DNS server could answer Chromium differently from the check. **For untrusted sites, scan from a container with no sensitive network access.**
+- Loopback is reachable only at the exact origin being scanned: a local build on `127.0.0.1:8777` can load its own files, and a remote page cannot probe another local port. Every name the kernel routes to this machine counts as loopback, never as "private": `0.0.0.0`, `0`, `::`, `127.x` other than `127.0.0.1`, `[::ffff:127.0.0.1]`, so `A11Y_ALLOW_PRIVATE=1` does not open them. (`A11Y_ALLOW_PRIVATE=1` does open this machine's own LAN, docker and tailscale addresses, because they are private addresses: a service listening on all interfaces is then reachable from a scanned page.)
+- Only http, https, data, blob and about URLs are allowed; file and ftp are blocked and service workers are bypassed. The `robots.txt` and sitemap fetches do not follow redirects.
+- **What is routed through the check, and what is not.** The harness starts a small local proxy and launches Chromium with `--proxy-server` and `--proxy-bypass-list=<-loopback>`, so **every TCP connection the browser makes goes through it**: page loads, subresources, `fetch`, beacons, iframes, **WebSockets (ws and wss), SharedWorker, Worker and service-worker traffic**, and the browser's own requests. The proxy applies the rules above to each one and connects to the address it checked. A browser-level test (`tests/test_egress.py`) serves a probe page from a non-loopback address and from loopback; it tries image, fetch, beacon, iframe, WebSocket, EventSource, Worker, SharedWorker, WebRTC and WebTransport against another local port and asserts that neither a TCP nor a UDP listener there saw anything. **UDP is not proxied.** WebRTC (STUN/ICE) is shut off with `--webrtc-ip-handling-policy=disable_non_proxied_udp` (measured: a STUN probe sent 5 datagrams to a local UDP port without the flag and none with it), and `WebTransport` is removed from pages and iframes. **Not covered:** any other UDP a future browser feature might open, and a WebTransport opened from inside a Worker (no datagram reached a local port in the test with the harness flags, but that is a measurement on one Chromium build, not a guarantee). The harness checks only what the browser does: it does not firewall the machine.
+- The proxy connects to the address the check resolved, for every host (starting page, redirects and subresources alike), so a hostile DNS server cannot answer the browser differently from the check. **For untrusted sites, scan from a container with no sensitive network access.**
 - A folder scan serves only files that really live under the folder; a symlink pointing outside it is a 404.
 - The MCP server scans only folders under its working directory (or `A11Y_SCAN_ROOT`), allows at most `A11Y_MAX_JOBS` (default 2) scans at once, enforces its argument bounds, kills a scan's whole process group on timeout, and negotiates the protocol version.
 

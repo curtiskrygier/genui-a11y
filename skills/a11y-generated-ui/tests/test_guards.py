@@ -1,6 +1,7 @@
 """Pure checks (no browser): the address classifier behind the network guard, and the coverage fields of the report."""
 import json, subprocess, sys
 from pathlib import Path
+import pytest
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / 'scripts'))
@@ -170,3 +171,34 @@ def test_a_rule_without_a_criterion_tag_falls_back_and_is_reported():
     assert 'made-up-rule' in ratchet.FALLBACKS
     rep = ratchet.build_report({'a': {'v': [{'id': 'made-up-rule', 'impact': 'minor', 'nodes': 1, 'cat': 'keyboard'}], 'p': []}}, {'a': '<p>x</p>'}, 'x')
     assert 'made-up-rule' in rep['layer_fallback_rules']
+
+
+# ---- round 3: everything the kernel routes to this host is loopback, never "private" ------------------------------------------------------------
+
+def test_the_unspecified_address_is_loopback_in_every_form():
+    assert classify('0.0.0.0', '0.1.2.3', '0.255.255.255', '::', '::0.0.0.0', '::ffff:0.0.0.0', '::ffff:0:0', '64:ff9b::0.0.0.0', '2002:0:1::') == ['loopback'] * 9
+
+
+def test_loopback_lookalikes_are_not_reachable_even_with_allow_private():
+    code = """import {vetUrl, declareTargets} from './lib.mjs';
+declareTargets({urls: {a: 'http://127.0.0.1:8777/'}});
+const out = [];
+for (const u of process.argv.slice(1)) { try { await vetUrl(u); out.push('ok'); } catch (e) { out.push('blocked'); } }
+console.log(JSON.stringify(out));"""
+    urls = ['http://127.0.0.1:8777/', 'http://0.0.0.0:8777/', 'http://0:8777/', 'http://[::]:8777/', 'http://[::1]:8777/', 'http://[::ffff:127.0.0.1]:8777/',
+            'http://127.0.0.2:8777/', 'ws://0.0.0.0:8777/', 'http://10.1.2.3/']
+    import os
+    r = subprocess.run(['node', '--input-type=module', '-e', code, *urls], capture_output=True, text=True, cwd=HERE / 'scripts', timeout=30, env=dict(os.environ, A11Y_ALLOW_PRIVATE='1'))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == ['ok'] + ['blocked'] * 7 + ['ok']      # a private LAN address is what A11Y_ALLOW_PRIVATE=1 is for; the rest is this machine
+
+
+def test_python_guards_agree_that_0_0_0_0_is_this_machine(monkeypatch):
+    import mcp_server
+    monkeypatch.setenv('A11Y_ALLOW_PRIVATE', '1')
+    for host in ('0.0.0.0', '0', '[::]', '127.0.0.2'):
+        with pytest.raises(SystemExit):
+            ratchet.check_public_host(host.strip('[]'))
+        with pytest.raises(ValueError):
+            mcp_server.check_target('http://' + host + ':8777/', False)
+    ratchet.check_public_host('127.0.0.1')

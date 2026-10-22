@@ -11,7 +11,7 @@ description: >-
   UI, or when adding components to a catalog. Not a substitute for a screen
   reader or disabled-user testing.
 license: MIT
-compatibility: Needs Python 3, Node 20+ and a Chromium; npm install in scripts/ once.
+compatibility: Needs Python 3, Node 22.23.4+, 24.22.1+ or 26.12.1+ (older is refused) and a Chromium; npm ci in scripts/ once.
 ---
 
 # a11y-generated-ui
@@ -46,7 +46,7 @@ A method and a small harness for one problem: UI that an agent generates tends t
 ## Commands
 
 ```
-cd scripts && npm install                    # once: axe-core, HTML_CodeSniffer, IBM Equal Access, puppeteer-core (needs Chromium; set CHROMIUM=/path if not /usr/bin/chromium)
+cd scripts && npm ci                    # once: axe-core, HTML_CodeSniffer, IBM Equal Access, puppeteer-core (needs Chromium; set CHROMIUM=/path if not /usr/bin/chromium)
 python3 ratchet.py --items items.json --shell host.css --baseline baseline.json            # ratchet
 python3 ratchet.py --items items.json --shell host.css --baseline baseline.json --update   # lock in a fixing batch
 python3 ratchet.py --items items.json --shell host.css --theme dark --baseline baseline-dark.json
@@ -64,13 +64,13 @@ python3 ratchet.py --dir ./dist --score --json              # full report for sc
 ```
 
 - Four layers, weighted: perceivable 35, operable 35, understandable 15, robust 15. A check's layer is the WCAG principle of its success criterion (axe's `wcag131` tag: the first digit, 1 perceivable, 2 operable, 3 understandable, 4 robust). A rule tagged under criteria of more than one principle (`area-alt`, `link-name`: 2.4.4 and 4.1.2) takes the lowest-numbered one. A rule with no criterion tag falls back to its axe category and is listed under `layer_fallback_rules` in the report. The weights are a judgement: with this mapping Understandable holds few rules, so its 15 points mostly sit unused on pages without forms or `lang` problems (a layer with nothing applicable is left out and the others are rescaled). Each layer is the weight of the checks that passed over the weight of those that applied; a failed check weighs by axe impact. Five static checks (keyboard, SVG and canvas names, endless motion) are added to the matching layers.
-- **Severity caps stop many passing checks hiding a barrier:** a critical failure or a keyboard barrier caps the page at 69, a serious failure at 84, and three or more of either at 59. A site where more than a tenth of pages are held at 69 or below cannot score above 69; more than a quarter held at 84 or below, not above 84.
+- **Severity caps stop many passing checks hiding a barrier:** a critical failure or a keyboard barrier caps the page at 69, a serious failure at 84, and three or more of either at 59. Site rules count pages by what held them down: more than a tenth of pages (or three or more pages) held by a critical or keyboard barrier cap the site at 69; any one such page caps it at 84, so adding clean pages cannot lift a site with a real barrier to an A; more than a quarter of pages held by a serious failure or worse cap it at 84. The headline prints how many pages are held down by a severe barrier.
 - Grades: A 90+, B 75+, C 55+, D 35+, F below; there is no A+. The labels always say "automated findings". Never present a grade as "accessible" or "compliant", and print the banner the report ends with: automated checks find only a share of real issues, and keyboard order, screen-reader output and content are not scored.
 - The tab-walk is not part of the score yet.
 
 ### As an MCP tool
 
-`scripts/mcp_server.py` is a local stdio MCP server (standard library only) so an agent can run scans itself. Installed as a Claude Code plugin it registers as `a11y-scan` (see `.mcp.json`); elsewhere run `python3 scripts/mcp_server.py` as a stdio server. Run `npm install` in `scripts/` first.
+`scripts/mcp_server.py` is a local stdio MCP server (standard library only) so an agent can run scans itself. Installed as a Claude Code plugin it registers as `a11y-scan` (see `.mcp.json`); elsewhere run `python3 scripts/mcp_server.py` as a stdio server. Run `npm ci` in `scripts/` first.
 
 Tools: `scan_start` (a URL or a built folder, with `crawl`, `max_pages`, `depth`, `theme`, `confirm_permission`) returns a job id at once; `scan_status`; `scan_result` (score, grade, layers, worst pages, failing checks, the coverage note); `explain_check`. Scans take minutes, hence the job. Localhost and local folders scan freely; any other host needs `confirm_permission` in the call and `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server (an agent cannot grant itself that), and link-local and cloud-metadata addresses are never scanned. When you report a result, include its coverage note.
 
@@ -116,7 +116,7 @@ Report: counts before and after with the date, what each count measures (items w
 
 ## Safety
 
-The scanner opens pages in a real browser, so it runs their JavaScript. Scan untrusted sites from a container or a machine with no sensitive network access. It refuses anything but localhost without `--confirm-permission`, never reads link-local or cloud-metadata addresses (it checks where a redirect lands, but cannot see a hostname that resolves there), and follows robots.txt. The MCP server adds a second switch an agent cannot flip: remote scanning needs `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server.
+The scanner opens pages in a real browser, so it runs their JavaScript. Scan untrusted sites from a container or a machine with no sensitive network access. It refuses anything but localhost without `--confirm-permission`, never reads link-local or cloud-metadata addresses (every browser connection, WebSockets and workers included, goes through a local proxy that checks the host and connects to the address it resolved; UDP is not proxied, WebRTC is disabled and WebTransport removed: see the README's Safety section), and follows robots.txt. The MCP server adds a second switch an agent cannot flip: remote scanning needs `A11Y_ALLOW_REMOTE=1` in the environment of whoever starts the server.
 
 ## What this does NOT do
 
@@ -128,7 +128,9 @@ No screen-reader testing, no testing with disabled people, no interactive states
 |---|---|
 | `--min-score N` | exit 1 below N; exit 3 when fewer than `--min-coverage` percent (default 90) of the requested pages could be audited, unless `--allow-partial` |
 | `A11Y_JOB_TIMEOUT` | seconds before a run is stopped and its finished pages scored (default 7200) |
-| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | milliseconds per page load and per axe run (defaults 40000, 25000); raise for very heavy pages |
+| `A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT` | milliseconds per page until its DOM is parsed (a page past it is not audited; the settle wait comes after it) and per axe run (defaults 40000, 25000); raise for very heavy pages |
+| `A11Y_PROTOCOL_TIMEOUT` | milliseconds (default 60000) one browser call may take before the page is marked NOT AUDITED and its tab is replaced; raise for very heavy pages |
+| `A11Y_IDLE_TIMEOUT`, `A11Y_SETTLE_MS` | milliseconds (defaults 10000, 1500): live URLs are audited once quiet (no request awaiting a response, no short timer pending, no DOM change) for `A11Y_SETTLE_MS`, waiting at most `A11Y_IDLE_TIMEOUT`; a page that never settles is audited as it stands and named. Content later than the bound is not audited. Activity is waited on for a while, content for longer. Activity (an open WebSocket, EventSource or Worker, a `setInterval` or a re-armed timer, a `requestAnimationFrame` loop, an attribute change such as `style` or `class` on an element that has already changed 3 times) holds the wait for at most `A11Y_ACTIVITY_MS` (6000 ms) after load: an AI answer that streams in, a job-status poll or an intro animation that ends in a reveal within that time is waited for; an endless carousel or animation is waited on for `A11Y_ACTIVITY_MS` (6 s) instead of the full bound: in our tests a carousel page took about 13 s in all (load, the activity wait and the quiet window) against about 5 s for a static page. A timer counts as a loop when the same function or the same line of code arms it again with the same delay, or when a timer callback re-arms its own delay; a render that such a repeat produces later than 6 s after load is not waited for, and that includes one-shot steps that happen to share a line and a delay (a polling loop with `await sleep(1000)`, or a step-by-step demo that does `await sleep(2000)` before each step): raise `A11Y_ACTIVITY_MS` (for example to 9000) for such pages. A loop whose delay changes every time (random jitter, back-off) is not recognised as a loop and waits the full bound instead (cost only). Content always counts, up to the full bound: an element or text that is added or changed (also inside shadow roots), a fetch whose body is still arriving, a pending one-shot timer or `scheduler.postTask`. So a page whose content keeps changing (a ticking clock, a live feed) waits the full bound and is listed in `pages_slow` (in `--json` and the MCP report); lower `A11Y_IDLE_TIMEOUT` for such sites (that also stops the wait for timers longer than the new bound). Content that arrives after a silent stream or poll longer than `A11Y_ACTIVITY_MS` is not audited: raise it for slow AI answers. Same-origin iframes are audited with the page and their late content is waited for; cross-origin and sandboxed (opaque-origin) iframes are not audited (axe only talks to frames of the page's own origin), so audit such a frame's URL on its own. Such a frame does not hold the wait either; a frame that never finishes loading makes its whole page NOT AUDITED. The crawl waits for new elements only, so text changes and activity cost nothing there and are paid once, in the audit. An idle live-reload socket, Worker or keep-alive interval still counts as activity and adds up to `A11Y_ACTIVITY_MS` to each page. The quiet window costs every page about `A11Y_SETTLE_MS` in the crawl and again in the audit; set `A11Y_SETTLE_MS=0` only when no content renders late |
 | `A11Y_NO_SANDBOX=1` | run Chromium without its sandbox (containers and CI images that cannot create it); the sandbox is on by default, so use this only for content you trust |
 | `A11Y_MAX_JOBS` | MCP server only: concurrent scans allowed (default 2) |
 | `A11Y_ALLOW_PRIVATE=1` | allow private address ranges (your own internal hosts); link-local and metadata addresses are never allowed |

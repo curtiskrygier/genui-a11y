@@ -4,7 +4,7 @@
 // --path-scope: stay under the start URL's own folder (so /docs/v2/index.html only follows links below /docs/v2/), not just on its origin.
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { launchBrowser, prepare, landedOnLinkLocal, vetUrl, declareTargets } from './lib.mjs';
+import { launchBrowser, prepare, go, landedOnLinkLocal, vetUrl, declareTargets, recover } from './lib.mjs';
 const [dir, start, ...rest] = process.argv.slice(2);
 const opt = (k, d) => { const i = rest.indexOf('--' + k); return i >= 0 ? Number(rest[i + 1]) : d; };
 const MAX = opt('max', 30), DEPTH = opt('depth', 2), DELAY = opt('delay', 500);
@@ -32,7 +32,7 @@ try {
 const allowed = (u) => !disallow.some(p => new URL(u).pathname.startsWith(p));
 const norm = (u) => { const x = new URL(u); x.hash = ''; if (x.pathname.length > 1) x.pathname = x.pathname.replace(/\/+$/, ''); return x.toString(); };
 const b = await launchBrowser(puppeteer, { urls: { start } });
-const page = await b.newPage();
+let page = await b.newPage();
 await prepare(page, { urls: { start } });   // viewport plus the per-request network check
 await page.setViewport({ width: 1100, height: 800 });
 const seen = new Map(), queue = [[norm(start), 0]];
@@ -42,7 +42,7 @@ while (queue.length && seen.size < MAX) {
   if (seen.has(url)) continue;
   if (!allowed(url)) { skipped.push(url + '  (robots.txt)'); continue; }
   try {
-    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: 40000 });
+    const resp = await go(page, url, { crawl: true });
     if (landedOnLinkLocal(page.url())) { skipped.push(url + '  (redirected to a link-local address)'); continue; }
     const type = (resp && resp.headers()['content-type']) || '';
     if (!/html/i.test(type)) continue;
@@ -56,10 +56,11 @@ while (queue.length && seen.size < MAX) {
         const n = norm(l); if (!seen.has(n)) queue.push([n, depth + 1]);
       }
     }
-  } catch (e) { skipped.push(url + '  (' + String(e.message).slice(0, 60) + ')'); }
+  } catch (e) { skipped.push(url + '  (' + String(e.message).slice(0, 60) + ')'); page = await recover(b, page, { urls: { start } }, e); await page.setViewport({ width: 1100, height: 800 }); }
   await new Promise(r => setTimeout(r, DELAY));
 }
 await b.close();
 const urls = {}; for (const [u, p] of seen) urls[p === '/' ? '/' : p] = u;
 fs.writeFileSync(dir + '/html.json', JSON.stringify({ urls }));
 console.log(`crawled ${seen.size} page(s) on ${origin}${PATH_SCOPE ? ' under ' + scopePrefix : ''} (max ${MAX}, depth ${DEPTH}, ${DELAY} ms apart)` + (disallow.length ? `; robots.txt disallows ${disallow.length} path(s)` : '') + (skipped.length ? `; skipped ${skipped.length}:\n  ` + skipped.slice(0, 8).join('\n  ') : ''));
+process.exit(0);

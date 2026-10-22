@@ -51,7 +51,7 @@ def test_explains_a_static_check(client):
     assert not err and 'button' in out['explanation']
 
 
-@pytest.mark.skipif(not HAVE_BROWSER, reason='run npm install in scripts/')
+@pytest.mark.skipif(not HAVE_BROWSER, reason='run npm ci in scripts/')
 def test_scans_a_local_folder_end_to_end(tmp_path):
     client = Client({'A11Y_SCAN_ROOT': str(tmp_path)})
     (tmp_path / 'index.html').write_text('<!doctype html><html lang="en"><title>t</title><main><span onclick="x()">go</span><p style="color:#aaa;background:#fff">pale</p></main></html>')

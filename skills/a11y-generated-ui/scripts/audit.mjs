@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import puppeteer from 'puppeteer-core';
-import { readInput, namesOf, prepare, open, launchBrowser } from './lib.mjs';
+import { readInput, namesOf, prepare, open, launchBrowser, recover } from './lib.mjs';
 const require = createRequire(import.meta.url);
 const dir = process.argv[2];
 const dark = process.argv[3] === 'dark';
@@ -11,7 +11,7 @@ const shell = fs.existsSync(dir + '/shell.css') ? fs.readFileSync(dir + '/shell.
 const d = readInput(dir);
 const axeSrc = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const b = await launchBrowser(puppeteer, d);
-const page = await b.newPage();
+let page = await b.newPage();
 await prepare(page, d);
 const out = {};
 const names = namesOf(d);
@@ -25,8 +25,10 @@ for (const t of names) {
     // pass and fail from run to run (seen on big_reveal, kinetic_headline, gmail_unread_count).
     await page.addStyleTag({ content: '*,*::before,*::after{animation-duration:0.001s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition:none!important}' });
     await new Promise(r => setTimeout(r, 200));
+    if (page._a11ySlow) res.slow = page._a11ySlow;          // the page never settled (network, timers or DOM changes); audited as it stood
     if (d.urls) res.src = (await page.content()).slice(0, 2000000);
     await page.evaluate(axeSrc);
+    for (const f of page.frames()) if (f !== page.mainFrame()) { try { await f.evaluate(axeSrc); } catch (_) {} }   // axe audits frames it is loaded in (iframes: true is its default)
     const ax = await Promise.race([
       page.evaluate(async () => {
         // axe tags some WCAG rules 'experimental' and a tag-selected run never executes them (td-has-header, table-fake-caption, p-as-heading and
@@ -45,7 +47,7 @@ for (const t of names) {
       new Promise((_, rej) => setTimeout(() => rej(new Error('axe timeout')), +(process.env.A11Y_AXE_TIMEOUT || 25000))),
     ]);
     res.v = ax.v; res.p = ax.p; res.inc = ax.inc;
-  } catch (e) { res.err = String(e.message).slice(0, 100); }
+  } catch (e) { res.err = String(e.message).replace(/Increase the 'protocolTimeout'.*$/, 'the page kept its tab busy (raise A11Y_PROTOCOL_TIMEOUT for very heavy pages)').slice(0, 140); page = await recover(b, page, d, e); }
   out[t] = res;
   n++;
   console.error('[' + n + '/' + names.length + '] ' + t + (res.err ? '  NOT AUDITED: ' + res.err : ''));
@@ -54,3 +56,4 @@ for (const t of names) {
 await b.close();
 save();
 console.log('audited ' + Object.keys(out).length);
+process.exit(0);   // never wait for a socket a page left open
