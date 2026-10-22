@@ -3,6 +3,7 @@
 // fetches, and the browser's own background requests. Each request is checked with the same rules as the in-page guard (vetUrl), and the connection
 // is made to the address that vetHost checked and cached, so the address checked is the address used (that closes the DNS-rebinding gap for every host).
 // It does not cover UDP (WebRTC / STUN and QUIC); lib.mjs switches those off with browser flags.
+import crypto from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
 
@@ -41,7 +42,8 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       tryNext(0);
     });
   }
-  const MINE = (why) => ({ 'x-a11y-scan-proxy': why.replace(/[^\x20-\x7e]/g, '?') });   // marks a response the proxy made itself: the page was never reached, so it is not audited
+  const NONCE = crypto.randomUUID();      // per run: a site cannot forge the mark below, because it cannot know this value
+  const MINE = (why) => ({ 'x-a11y-scan-proxy': NONCE + ' ' + why.replace(/[^\x20-\x7e]/g, '?') });   // marks a response the proxy made itself: the page was never reached, so it is not audited
   const refuse = (what, e) => { blocked.push(what); if (!blockAll) log('blocked ' + what + ': ' + String(e.message).slice(0, 120)); };
 
   const server = http.createServer(async (req, res) => {       // plain http:// through the proxy: the request line carries an absolute URL
@@ -54,7 +56,7 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       const headers = { ...req.headers }; delete headers['proxy-connection']; delete headers['proxy-authorization'];
       const up = http.request({ createConnection: () => sock, method: req.method, path: u.pathname + u.search, headers });
       res.on('close', () => up.destroy());                       // the browser side went away (page done, request cancelled): stop the upstream too
-      up.on('response', (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+      up.on('response', (r) => { delete r.headers['x-a11y-scan-proxy']; res.writeHead(r.statusCode, r.headers); r.pipe(res); });
       up.on('error', () => { try { res.writeHead(502, MINE('upstream error')).end(); } catch (_) {} });
       req.pipe(up);
     } catch (e) { refuse(req.url, e); try { res.writeHead(403, MINE('blocked: ' + String(e.message).slice(0, 80))).end('blocked by the scan proxy'); } catch (_) {} }
@@ -88,5 +90,5 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   server.unref();
-  return { port: server.address().port, blocked, dropAll, close: () => { try { dropAll(); server.closeAllConnections(); server.close(); } catch (_) {} } };
+  return { port: server.address().port, blocked, dropAll, nonce: NONCE, close: () => { try { dropAll(); server.closeAllConnections(); server.close(); } catch (_) {} } };
 }

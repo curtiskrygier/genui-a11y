@@ -205,9 +205,10 @@ export async function prepare(page, d) {
 // requests in flight, no one-shot timer (up to that bound) still pending, and no DOM mutation for A11Y_SETTLE_MS (default 1500 ms). So content a page renders
 // after a slow fetch, chained fetches, a stream or a timer is in the DOM when it is audited; a fetch/XHR whose body is still arriving counts as busy. A page
 // that never settles (an open SSE stream with no new content does not count against it, but a long poll, a request that is never answered, a ticking clock or
-// any other content that keeps changing does) is audited as it stands and marked slow, not failed. Only motion is cut short: an attribute (style, class,
-// transform ...) on a node that has already changed 3 times is motion, and motion holds the wait for at most A11Y_MOTION_MS (default 5000) after load, so an
-// intro animation that ends in a reveal is waited out but an endless one is not. Added or changed content (elements or text) always counts. The crawl ignores text
+// any other content that keeps changing does) is audited as it stands and marked slow, not failed. Activity is cut short: open WebSockets, EventSources and
+// Workers, setInterval and re-armed timers, requestAnimationFrame loops and attribute churn after a node's 3rd change hold the wait for at most
+// A11Y_ACTIVITY_MS (default 6000) after load, so an answer that streams in within that time is waited for, but an endless carousel is not.
+// Added or changed content (elements or text, also inside shadow roots) always counts. The crawl ignores text
 // changes (it needs the links, and new links are elements), so a ticking clock costs the full wait once, in the audit, not twice.
 // Before every page the previous one is cancelled and the proxy drops its sockets, so a hanging request of page N cannot hold page N+1 or the exit.
 function watchSettle(page) {
@@ -220,35 +221,74 @@ function watchSettle(page) {
   w.bump = bump;
   return w;
 }
-const SETTLE_PROBE = (cap) => {      // runs in every new document: one-shot timers (up to `cap` ms) that have not fired, and the time of the last DOM mutation
-  // last: any counted change (the audit waits on it); lastEl: the last element added (the crawl waits on it: links are elements, a ticking clock is not)
-  const st = window.__a11ySettle = { timers: new Set(), last: performance.now(), lastEl: performance.now(), motion: 0 };
+const SETTLE_PROBE = (cap) => {      // runs in every new document: what the page is still waiting on, and when its content last changed
+  // last: any content change (the audit waits on it); lastEl: the last element added (the crawl waits on it: links are elements, a ticking clock is not).
+  // timers: one-shot timers and postTask delays (up to `cap` ms) not yet run: they hold the wait up to the bound. Activity (a re-armed timer, a setInterval,
+  // an open WebSocket / EventSource / Worker, a requestAnimationFrame loop, attribute churn after a node's 3rd change) holds it only up to the activity
+  // budget: a page waiting on a stream or a poll is waited for, an endless carousel or clock is not.
+  const st = window.__a11ySettle = { timers: new Set(), loops: new Set(), streams: new Set(), last: performance.now(), lastEl: performance.now(), act: 0 };
   const REPEAT = 3;                  // an attribute on a node that has changed this many times is motion (JS animation, carousel class), not content
   try {
-    const st0 = window.setTimeout, ct0 = window.clearTimeout, changed = new WeakMap();
+    const st0 = window.setTimeout, ct0 = window.clearTimeout, si0 = window.setInterval, ci0 = window.clearInterval, raf0 = window.requestAnimationFrame;
+    const changed = new WeakMap(), armed = new WeakMap();
+    const now = () => performance.now();
     window.setTimeout = function (fn, ms, ...args) {
       if (typeof fn !== 'function' || !(+ms <= cap)) return st0.call(this, fn, ms, ...args);
-      let id; const wrapped = function (...a) { st.timers.delete(id); st.last = performance.now(); return fn.apply(this, a); };
-      id = st0.call(this, wrapped, ms, ...args); st.timers.add(id); return id;
+      const n = (armed.get(fn) || 0) + 1; armed.set(fn, n);
+      const set = n >= 2 ? st.loops : st.timers;      // the same callback armed again is a loop (carousel, poll): activity, not a one-shot render
+      let id; const wrapped = function (...a) { set.delete(id); st.act = now(); return fn.apply(this, a); };
+      id = st0.call(this, wrapped, ms, ...args); set.add(id); return id;
     };
-    window.clearTimeout = function (id) { st.timers.delete(id); return ct0.call(this, id); };
-    new MutationObserver((ms) => {
-      const now = performance.now();
+    window.clearTimeout = function (id) { st.timers.delete(id); st.loops.delete(id); return ct0.call(this, id); };
+    window.setInterval = function (fn, ms, ...args) {
+      if (typeof fn !== 'function' || !(+ms <= cap)) return si0.call(this, fn, ms, ...args);
+      const id = si0.call(this, function (...a) { st.act = now(); return fn.apply(this, a); }, ms, ...args); st.loops.add(id); return id;
+    };
+    window.clearInterval = function (id) { st.loops.delete(id); return ci0.call(this, id); };
+    window.requestAnimationFrame = function (fn) { st.act = now(); return raf0.call(this, fn); };
+    if (window.scheduler && scheduler.postTask) {
+      const pt0 = scheduler.postTask.bind(scheduler);
+      scheduler.postTask = function (fn, o) {
+        const d = o && +o.delay; if (!(d > 0 && d <= cap)) return pt0(fn, o);
+        const tok = {}; st.timers.add(tok);
+        return pt0((...a) => { st.timers.delete(tok); st.act = now(); return fn(...a); }, o).finally(() => st.timers.delete(tok));
+      };
+    }
+    const stream = (C, closeName) => {                // a live connection is activity until it is closed
+      if (!C) return C;
+      const W = function (...a) {
+        const x = new C(...a); st.streams.add(x); st.act = now();
+        x.addEventListener('message', () => { st.act = now(); });
+        for (const ev of ['close', 'error']) x.addEventListener(ev, () => { if (ev === 'close' || x.readyState === 2) st.streams.delete(x); });
+        const c = x[closeName]; if (c) x[closeName] = function (...b) { st.streams.delete(x); return c.apply(this, b); };
+        return x;
+      };
+      W.prototype = C.prototype; Object.setPrototypeOf(W, C); return W;
+    };
+    window.WebSocket = stream(window.WebSocket, 'close');
+    window.EventSource = stream(window.EventSource, 'close');
+    window.Worker = stream(window.Worker, 'terminate');
+    const obs = new MutationObserver((ms) => {
+      const t = now();
       for (const m of ms) {
         if (m.type === 'attributes') {                    // the first changes to a node count (a display:none -> block reveal); repeats are animation
           const n = (changed.get(m.target) || 0) + 1; changed.set(m.target, n);
-          if (n < REPEAT) st.last = now; else st.motion = now;
+          if (n < REPEAT) st.last = t; else st.act = t;
           continue;
         }
-        st.last = now;                                    // content: text or nodes added, removed or changed, every time
-        if (m.type === 'childList' && [...m.addedNodes].some(x => x.nodeType === 1)) st.lastEl = now;
+        st.last = t;                                      // content: text or nodes added, removed or changed, every time
+        if (m.type === 'childList' && [...m.addedNodes].some(x => x.nodeType === 1)) st.lastEl = t;
       }
-    }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    });
+    const OPTS = { subtree: true, childList: true, attributes: true, characterData: true };
+    obs.observe(document, OPTS);
+    const as0 = Element.prototype.attachShadow;          // shadow roots (open or closed) are watched like the document
+    Element.prototype.attachShadow = function (...a) { const r = as0.apply(this, a); try { obs.observe(r, OPTS); } catch (e) {} st.last = now(); return r; };
   } catch (e) {}
 };
 export async function go(page, url, { crawl = false } = {}) {
   const nav = +(process.env.A11Y_NAV_TIMEOUT || 40000), full = +(process.env.A11Y_IDLE_TIMEOUT || 10000);
-  const motionMs = +(process.env.A11Y_MOTION_MS || 5000);
+  const activityMs = +(process.env.A11Y_ACTIVITY_MS || 6000);
   const quiet = process.env.A11Y_SETTLE_MS === undefined || process.env.A11Y_SETTLE_MS === '' ? 1500 : Math.max(0, +process.env.A11Y_SETTLE_MS || 0);
   const bound = Math.min(nav, full), netQuiet = quiet === 0 ? 0 : 500;
   page._a11ySlow = 0;
@@ -260,10 +300,17 @@ export async function go(page, url, { crawl = false } = {}) {
   const t0 = Date.now();
   w.last = t0;
   for (;;) {
-    let dom = { timers: 0, quiet: 1e9, still: 1e9 };
-    try { dom = await page.evaluate((crawl) => { const s = window.__a11ySettle, t = performance.now(); return s ? { timers: s.timers.size, quiet: t - (crawl ? s.lastEl : s.last), still: crawl ? 1e9 : t - s.motion } : { timers: 0, quiet: 1e9, still: 1e9 }; }, crawl); } catch (_) { /* navigating or closing: judge by the network alone */ }
+    let dom = { timers: 0, quiet: 1e9, active: false };
+    try {
+      dom = await page.evaluate((quiet) => {
+        const s = window.__a11ySettle, t = performance.now();
+        return s ? { timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
+                 : { timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
+      }, quiet);
+    } catch (_) { /* navigating or closing: judge by the network alone */ }
+    if (crawl) { dom.quiet = dom.quietEl ?? dom.quiet; dom.active = false; }    // the crawl needs links: new elements, not text or activity
     const busy = w.awaiting.size > 0 || w.inflight.size > 2 || w.data.size > 0 || dom.timers > 0;
-    const moving = dom.still < quiet && Date.now() - t0 < motionMs;      // motion is waited out for at most A11Y_MOTION_MS after load
+    const moving = dom.active && Date.now() - t0 < activityMs;     // streams, polls, loops and motion are waited on for at most A11Y_ACTIVITY_MS after load
     if (!busy && !moving && Date.now() - w.last >= netQuiet && dom.quiet >= quiet) break;
     if (Date.now() - t0 >= bound) { page._a11ySlow = Math.round((Date.now() - t0) / 1000) || 1; break; }
     await new Promise(r => setTimeout(r, 100));
@@ -279,8 +326,9 @@ export async function open(page, d, t, { shell, dark, kind }) {
       await page.evaluateOnNewDocument((ak, av, sk, sv) => { try { if (sk) localStorage.setItem(sk, sv || 'dark'); } catch (e) {} if (ak) document.documentElement.setAttribute(ak, av || 'dark'); }, ak, av, sk, sv);
     }
     const resp = await go(page, d.urls[t]);
-    const mine = resp && resp.headers()['x-a11y-scan-proxy'];
-    if (mine) throw new Error('could not be reached (' + mine + '): not audited');      // the proxy's own error page, not the site's
+    const mark = (resp && resp.headers()['x-a11y-scan-proxy']) || '';
+    if (activeProxy && mark.startsWith(activeProxy.nonce + ' '))      // the proxy's own error page (only it knows the nonce), not the site's
+      throw new Error('could not be reached (' + mark.slice(activeProxy.nonce.length + 1) + '): not audited');
     if (landedOnLinkLocal(page.url())) throw new Error('redirected to a link-local or metadata address: not audited');
     if (dark && DARK_ATTR) { const [k, v] = DARK_ATTR.split('='); await page.evaluate((k, v) => document.documentElement.setAttribute(k, v), k, v || 'dark'); }
     return;

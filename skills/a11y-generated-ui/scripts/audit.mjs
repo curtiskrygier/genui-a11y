@@ -28,6 +28,7 @@ for (const t of names) {
     if (page._a11ySlow) res.slow = page._a11ySlow;          // the page never settled (network, timers or DOM changes); audited as it stood
     if (d.urls) res.src = (await page.content()).slice(0, 2000000);
     await page.evaluate(axeSrc);
+    for (const f of page.frames()) if (f !== page.mainFrame()) { try { await f.evaluate(axeSrc); } catch (_) {} }   // axe audits frames it is loaded in (iframes: true is its default)
     const ax = await Promise.race([
       page.evaluate(async () => {
         // axe tags some WCAG rules 'experimental' and a tag-selected run never executes them (td-has-header, table-fake-caption, p-as-heading and

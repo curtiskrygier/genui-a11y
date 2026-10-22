@@ -59,7 +59,7 @@ def test_motion_does_not_hold_the_wait_and_pages_slow_is_in_json(tmp_path, site)
     audit = json.load(open(out))['audit']
     for k, v in audit.items():
         assert {'image-alt', 'button-name'} <= {x['id'] for x in v.get('v', [])}, f'{k}: barrier not audited'
-    assert sorted(rep['pages_slow']) == ['/carousel_to5', '/clock1s', '/clock_late3', '/hang'], rep['pages_slow']   # content that keeps changing waits the bound; style animation does not
+    assert sorted(rep['pages_slow']) == ['/clock1s', '/clock_late3', '/hang'], rep['pages_slow']   # content that keeps changing waits the bound; animation and re-armed carousels do not
     assert rep['pages_deadline'] == []
     assert 'A11Y_IDLE_TIMEOUT' in r.stderr and '/hang (' in r.stderr, r.stderr
 
@@ -72,7 +72,7 @@ def test_crawl_scans_moving_pages(tmp_path, site):
     took = time.time() - t0
     rep = json.loads(r.stdout)
     assert rep['pages_scanned'] == 6, r.stderr
-    assert sorted(rep['pages_slow']) == ['/carousel_to5', '/clock1s', '/clock_late3', '/hang']
+    assert sorted(rep['pages_slow']) == ['/clock1s', '/clock_late3', '/hang']
     assert took < 120, f'{took:.0f} s'
 
 
@@ -87,4 +87,4 @@ def test_nav_timeout_is_not_described_as_the_whole_page_load():
         t = f.read_text()
         row = next(l for l in t.splitlines() if '`A11Y_NAV_TIMEOUT`, `A11Y_AXE_TIMEOUT`' in l)
         assert 'per page load' not in row and 'DOM is parsed' in row, f
-        assert 'A11Y_MOTION_MS' in t and 'pages_slow' in t and 'A11Y_CRAWL_IDLE_TIMEOUT' not in t, f
+        assert 'A11Y_ACTIVITY_MS' in t and 'pages_slow' in t and 'A11Y_CRAWL_IDLE_TIMEOUT' not in t, f
