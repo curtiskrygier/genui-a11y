@@ -232,16 +232,21 @@ const SETTLE_PROBE = (cap) => {      // runs in every new document: what the pag
   try {
     const st0 = window.setTimeout, ct0 = window.clearTimeout, si0 = window.setInterval, ci0 = window.clearInterval, raf0 = window.requestAnimationFrame;
     const changed = new WeakMap(), armed = new WeakMap(), sites = new Map();
-    let inCb = 0;
+    let inCb = 0, cbDelay = -1;
     const now = () => performance.now();
     window.setTimeout = function (fn, ms, ...args) {
       if (typeof fn !== 'function' || !(+ms <= cap)) return st0.call(this, fn, ms, ...args);
-      // A loop (carousel, poll) re-arms from the same place in its code, often with a new arrow or .bind each time: key on the calling
-      // line as well as the function, and treat a timer armed from inside a tracked timer callback as part of a loop too.
+      // A loop (carousel, poll) re-arms from the same place in its code, often with a new arrow or .bind each time, and with the SAME
+      // delay: key on the function and on the calling line, and call it a loop only when the delay repeats too. A timer armed inside a
+      // tracked timer callback is a loop only when it repeats that callback's own delay. Unrelated one-shot renders that share a helper
+      // line (a timer helper, zone.js, await sleep(n) with different n) keep their own delays, so they stay one-shot and hold the wait.
+      const d = +ms || 0;
       const site = String((new Error()).stack || '').split('\n')[2] || '';
-      const n = Math.max((armed.get(fn) || 0) + 1, (sites.get(site) || 0) + 1); armed.set(fn, n); if (site) sites.set(site, n);
-      const set = n >= 2 || inCb > 0 ? st.loops : st.timers;
-      let id; const wrapped = function (...a) { set.delete(id); st.act = now(); inCb++; try { return fn.apply(this, a); } finally { inCb--; } };
+      const fnSeen = armed.get(fn), siteSeen = site ? sites.get(site) : undefined;
+      const repeat = (fnSeen !== undefined && fnSeen === d) || (siteSeen !== undefined && siteSeen === d) || (inCb > 0 && cbDelay === d);
+      armed.set(fn, d); if (site) sites.set(site, d);
+      const set = repeat ? st.loops : st.timers;
+      let id; const wrapped = function (...a) { set.delete(id); st.act = now(); const prev = cbDelay; cbDelay = d; inCb++; try { return fn.apply(this, a); } finally { inCb--; cbDelay = prev; } };
       id = st0.call(this, wrapped, ms, ...args); set.add(id); return id;
     };
     window.clearTimeout = function (id) { st.timers.delete(id); st.loops.delete(id); return ct0.call(this, id); };
@@ -324,8 +329,11 @@ export async function go(page, url, { crawl = false } = {}) {
                  : { timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
       };
       dom = await page.evaluate(probe, quiet);
-      for (const f of page.frames()) {               // iframes are audited with the page, so their late content is waited for too
+      const mainOrigin = (() => { try { return new URL(page.url()).origin; } catch (_) { return ''; } })();
+      for (const f of page.frames()) {               // same-origin iframes are audited with the page, so their late content is waited for too
         if (f === page.mainFrame()) continue;
+        const fu = f.url();
+        if (/^https?:/.test(fu) && (() => { try { return new URL(fu).origin !== mainOrigin; } catch (_) { return true; } })()) continue;   // not audited, so it does not hold the wait
         let x; try { x = await f.evaluate(probe, quiet); } catch (_) { continue; }   // a frame being torn down or navigating
         dom = { timers: dom.timers + x.timers, quiet: Math.min(dom.quiet, x.quiet), quietEl: Math.min(dom.quietEl, x.quietEl), active: dom.active || x.active };
       }

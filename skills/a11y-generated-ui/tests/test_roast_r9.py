@@ -14,6 +14,12 @@ REAL = pytest.mark.skipif(not (SCRIPTS / 'node_modules').exists() or not os.path
 
 BAR = "<img src=data:image/gif;base64,R0lGODlhAQABAAAAACw= ><button></button>"
 INS = "document.querySelector('main').insertAdjacentHTML('beforeend','" + BAR + "')"
+# Round 10: one-shot renders 7-8 s after load whose timers share one line of code (a helper, a zone.js-style patch, await sleep()):
+# they keep their own delays, so they are not a loop and must still be waited for.
+HELPER = "<script>function later(f,ms){return setTimeout(f,ms)}</script>"
+ZONE = "<script>(function(){const n=window.setTimeout;window.setTimeout=function(f,ms,...a){return n.call(window,function(){return f.apply(this,arguments)},ms,...a)}})()</script>"
+SLEEP = "<script>const sleep=ms=>new Promise(r=>setTimeout(r,ms))</script>"
+TOAST = "document.querySelector('main').insertAdjacentHTML('beforeend','<p>saved</p>')"
 PAGES = {
     # React/class-style carousels: each re-arm passes a new arrow or a fresh .bind (R9: 21.7 s per page, all slow)
     'carousel_arrow': BAR + "<div id=s class=a>slide</div><script>function next(){s.classList.toggle('a');setTimeout(()=>next(),2000)}setTimeout(()=>next(),2000)</script>",
@@ -21,6 +27,9 @@ PAGES = {
     # late content inside a same-origin iframe, 3 s after load
     'iframe_late': "<iframe title=f srcdoc=\"<main></main><script>setTimeout(()=>{document.querySelector('main').insertAdjacentHTML('beforeend','<img src=data:image/gif;base64,R0lGODlhAQABAAAAACw= ><button></button>')},3000)</script>\"></iframe>",
     # a chat client that subclasses WebSocket; the answer lands 2 s later
+    'helper_toast_render8': HELPER + "<script>later(()=>{" + TOAST + "},300);later(()=>{" + INS + "},8000)</script>",
+    'zone_toast_render7': ZONE + "<script>setTimeout(()=>{" + TOAST + "},300);setTimeout(()=>{" + INS + "},7000)</script>",
+    'sleep_chain7_5': SLEEP + "<script>(async()=>{await sleep(1000);" + TOAST + ";await sleep(6500);" + INS + "})()</script>",
     'ws_subclass': "<script>class Chat extends WebSocket{constructor(u){super(u);this.addEventListener('message',()=>{" + INS + "})}}new Chat('ws://'+location.host+'/ws')</script>",
 }
 
@@ -62,4 +71,4 @@ def test_rearmed_carousels_iframe_late_content_and_websocket_subclass(tmp_path, 
     missed = [k for k, v in audit.items() if not {'image-alt', 'button-name'} <= {x['id'] for x in v.get('v', [])}]
     assert not missed, (missed, r.stderr[-400:])
     assert not rep['pages_slow'], rep['pages_slow']            # the carousels are loops (activity), not pending one-shot timers
-    assert took < 70, f'{took:.0f} s'
+    assert took < 110, f'{took:.0f} s'

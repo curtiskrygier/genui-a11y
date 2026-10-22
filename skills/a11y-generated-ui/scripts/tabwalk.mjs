@@ -83,7 +83,7 @@ for (const t of namesOf(d)) {
       if (CONTROLS.has(role)) add('unreachable_control', role + ' ' + String(val(n.name)).slice(0, 40)); else if (COMPOSITE.has(role)) res.composite_unreached++;
     }
   } catch (e) {
-    res.err = String(e.message).slice(0, 100);
+    res.err = String(e.message).replace(/Increase the 'protocolTimeout'.*$/, 'the page kept its tab busy (raise A11Y_PROTOCOL_TIMEOUT for very heavy pages)').slice(0, 140);
     const fresh = await recover(b, page, d, e);
     if (fresh !== page) { page = fresh; cdp = await page.createCDPSession(); await cdp.send('Accessibility.enable'); await cdp.send('DOM.enable'); }   // the old session died with the old tab
   }

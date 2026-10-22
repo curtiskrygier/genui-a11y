@@ -607,7 +607,7 @@ def main():
             tw_err = {k: v['err'] for k, v in tw.items() if v.get('err')}
             if tw_err:
                 print(f"NOT WALKED ({len(tw_err)}): " + '; '.join(f'{k} [{e}]' for k, e in list(tw_err.items())[:5]) + '  (an item that could not be walked is not clean)', file=sys.stderr)
-            return 1 if cur else 3 if tw_err else 0
+            return 3 if tw_err else 1 if cur else 0      # the worse code wins: an item that could not be walked makes the result incomplete
         if a.crosscheck:
             print(node('audit.mjs', td, a.theme))
             for eng in ('htmlcs', 'ibm'):
