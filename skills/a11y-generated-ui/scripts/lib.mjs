@@ -337,7 +337,7 @@ export async function go(page, url, { crawl = false } = {}) {
         if (/^https?:/.test(fu) && (() => { try { return new URL(fu).origin !== mainOrigin; } catch (_) { return true; } })()) continue;   // not audited, so it does not hold the wait
         let x; try { x = await f.evaluate(probe, quiet); } catch (_) { continue; }   // a frame being torn down or navigating
         if (x.origin !== dom.origin) continue;      // sandboxed (opaque origin) and data: frames are not audited either, so they do not hold the wait
-        dom = { timers: dom.timers + x.timers, quiet: Math.min(dom.quiet, x.quiet), quietEl: Math.min(dom.quietEl, x.quietEl), active: dom.active || x.active };
+        dom = { origin: dom.origin, timers: dom.timers + x.timers, quiet: Math.min(dom.quiet, x.quiet), quietEl: Math.min(dom.quietEl, x.quietEl), active: dom.active || x.active };   // keep the page's origin: every later frame is compared with it
       }
     } catch (_) { /* navigating or closing: judge by the network alone */ }
     if (crawl) { dom.quiet = dom.quietEl ?? dom.quiet; dom.active = false; }    // the crawl needs links: new elements, not text or activity

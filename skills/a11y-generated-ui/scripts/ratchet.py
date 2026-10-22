@@ -315,7 +315,7 @@ def grade_word(g):
 
 def score_page(res, flags, drop=frozenset(), applicable=None):
     """One page. Per layer: the weight of the rules that passed over the weight of those that applied; failures weigh by axe impact.
-    drop: check ids to treat as fixed (the what-if). Returns (score, layer scores, points lost per check, cap penalty)."""
+    drop: check ids to treat as fixed (the what-if). Returns (score, layer scores, points lost per check, cap penalty, severity class)."""
     tot_w, lost = collections.Counter(), collections.Counter()
     fail = []                                   # (check id, layer, weight)
     for p in res.get('p', []):
