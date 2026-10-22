@@ -326,8 +326,8 @@ export async function go(page, url, { crawl = false } = {}) {
     try {
       const probe = (quiet) => {
         const s = window.__a11ySettle, t = performance.now();
-        return s ? { origin: location.origin, timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
-                 : { origin: location.origin, timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
+        return s ? { origin: self.origin, timers: s.timers.size, quiet: t - s.last, quietEl: t - s.lastEl, active: s.loops.size > 0 || s.streams.size > 0 || t - s.act < Math.max(quiet, 300) }
+                 : { origin: self.origin, timers: 0, quiet: 1e9, quietEl: 1e9, active: false };
       };
       dom = await page.evaluate(probe, quiet);
       const mainOrigin = (() => { try { return new URL(page.url()).origin; } catch (_) { return ''; } })();
