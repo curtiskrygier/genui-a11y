@@ -41,12 +41,13 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       tryNext(0);
     });
   }
+  const MINE = (why) => ({ 'x-a11y-scan-proxy': why.replace(/[^\x20-\x7e]/g, '?') });   // marks a response the proxy made itself: the page was never reached, so it is not audited
   const refuse = (what, e) => { blocked.push(what); if (!blockAll) log('blocked ' + what + ': ' + String(e.message).slice(0, 120)); };
 
   const server = http.createServer(async (req, res) => {       // plain http:// through the proxy: the request line carries an absolute URL
     let u;
     track(req.socket);
-    try { u = new URL(req.url); } catch (e) { res.writeHead(400).end(); return; }
+    try { u = new URL(req.url); } catch (e) { res.writeHead(400, MINE('bad request')).end(); return; }
     try {
       const addrs = await allow(u.protocol === 'https:' ? 'https' : 'http', u.hostname.replace(/^\[|\]$/g, ''), +u.port || 80);
       const sock = await connectAny(addrs, +u.port || 80);
@@ -54,9 +55,9 @@ export async function startVettingProxy({ vetUrl, vetHost, blockAll = false, log
       const up = http.request({ createConnection: () => sock, method: req.method, path: u.pathname + u.search, headers });
       res.on('close', () => up.destroy());                       // the browser side went away (page done, request cancelled): stop the upstream too
       up.on('response', (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
-      up.on('error', () => { try { res.writeHead(502).end(); } catch (_) {} });
+      up.on('error', () => { try { res.writeHead(502, MINE('upstream error')).end(); } catch (_) {} });
       req.pipe(up);
-    } catch (e) { refuse(req.url, e); try { res.writeHead(403).end('blocked by the scan proxy'); } catch (_) {} }
+    } catch (e) { refuse(req.url, e); try { res.writeHead(403, MINE('blocked: ' + String(e.message).slice(0, 80))).end('blocked by the scan proxy'); } catch (_) {} }
   });
   server.on('connect', async (req, client, head) => {            // CONNECT host:port: https:// and wss:// and (in Chromium) ws:// too
     const hp = hostPort(req.url);

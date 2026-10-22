@@ -197,6 +197,7 @@ def stop_run(p, profile):
     p.wait()
 
 
+TEMP = []        # this run's temp dir, removed on SIGTERM even when no engine is running
 ACTIVE = []      # (process, profile) of the engine scripts running now, so that being stopped from outside (the MCP server's timeout) can take them down too
 
 
@@ -204,6 +205,8 @@ def _on_term(signum, frame):
     for p, profile in list(ACTIVE):
         stop_run(p, profile)
         shutil.rmtree(Path(profile).parent, ignore_errors=True)      # the run's temp dir (scanned URLs, audit.json): os._exit skips the cleanup that a normal exit does
+    for t in TEMP:
+        shutil.rmtree(t, ignore_errors=True)
     os._exit(143)
 
 
@@ -567,6 +570,7 @@ def main():
         return 1 if c and not a.update and a.baseline and not Path(a.baseline).exists() else 0
     with tempfile.TemporaryDirectory() as t:
         td = Path(t)
+        TEMP.append(t)
         if live:
             if a.url and not a.crawl:
                 urls = {urllib.parse.urlparse(a.url).path or '/': a.url}
@@ -579,7 +583,8 @@ def main():
                     sys.exit(3)      # 3 = the audit could not run
                 urls = json.loads((td / 'html.json').read_text())['urls']
             if not urls:
-                sys.exit('no pages to scan')
+                print('no pages to scan', file=sys.stderr)
+                sys.exit(3)      # 3 = the audit could not run
             discovered = list(urls)
             if a.max_pages:
                 urls = dict(list(urls.items())[:a.max_pages])
@@ -623,7 +628,7 @@ def main():
     if deadline:
         print(f"{len(deadline)} page(s) hit the per-page deadline (A11Y_NAV_TIMEOUT, {int(os.environ.get('A11Y_NAV_TIMEOUT', 40000)) // 1000} s) and were not audited: {', '.join(deadline[:5])}{'...' if len(deadline) > 5 else ''}", file=sys.stderr)
     if slow:
-        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or a page that keeps changing new content) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
+        print(f"{len(slow)} page(s) never went idle (a long poll, a request that is never answered, or content that keeps changing, such as a ticking clock) and were audited as they stood after waiting up to A11Y_IDLE_TIMEOUT "
               f"({int(os.environ.get('A11Y_IDLE_TIMEOUT', 10000)) // 1000} s) each: {', '.join(f'{k} ({s_} s)' for k, s_ in list(slow.items())[:5])}{'...' if len(slow) > 5 else ''}. "
               "Lower A11Y_IDLE_TIMEOUT to scan such pages faster; content that appears after the wait is not audited.", file=sys.stderr)
     if timed_out:
@@ -681,6 +686,9 @@ def ratchet_mode(a, audit, cur, errors, missing, pairs, out=None, result=None):
             print(f'    {fg} on {bg}  nodes={len(lst):3d} items={len({x for x, _ in lst}):3d} ratio={lst[0][1]}')
         for f_, k in collections.Counter(f for fl in cur['static'].values() for f in fl).most_common():
             print(f'  {f_:32s} {k:4d} items')
+        if (errors or missing) and len(errors) >= len(audit):
+            print('no page could be audited: the breakdown above is empty, not clean', file=sys.stderr)
+            return 3       # 3 = the audit could not run
         return 0
     base_path = Path(a.baseline)
     if missing:
