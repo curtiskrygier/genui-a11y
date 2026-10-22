@@ -48,7 +48,7 @@ It also scans ordinary sites (a built folder, a running site, a sitemap). That w
 
 ## Quick start
 
-**You need:** Node 20+, Python 3, and a Chromium or Chrome (`sudo apt install chromium` on Debian or Ubuntu; set `CHROMIUM=/path` if it is not at `/usr/bin/chromium`).
+**You need:** Node 22.23.4+, 24.22.1+ or 26.12.1+ (the October 2026 security release; older Node is refused), Python 3, and a Chromium or Chrome (`sudo apt install chromium` on Debian or Ubuntu; set `CHROMIUM=/path` if it is not at `/usr/bin/chromium`).
 
 ```bash
 git clone https://github.com/curtiskrygier/genui-a11y.git

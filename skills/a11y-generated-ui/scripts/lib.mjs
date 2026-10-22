@@ -5,6 +5,21 @@ import fs from 'node:fs';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { startVettingProxy } from './proxy.mjs';
+// The engines read pages from sites you do not control (robots.txt is fetched with Node's own fetch). Node releases older than the October 2026
+// security release (Brotli decoder out-of-bounds write, TLS hostname checks, HTTP keep-alive) are refused; Node 20 and older are end of life.
+// A11Y_ALLOW_OLD_NODE=1 runs anyway, with a warning, for a machine that cannot be updated yet.
+export const MIN_NODE = { 22: [23, 4], 24: [22, 1], 26: [12, 1] };
+export function nodeVersionOk(v) {
+  const [maj, min, pat] = String(v).replace(/^v/, '').split('.').map(Number);
+  if (maj > 26) return true;
+  const m = MIN_NODE[maj];
+  return !!m && (min > m[0] || (min === m[0] && pat >= m[1]));
+}
+if (!nodeVersionOk(process.versions.node)) {
+  const msg = `Node ${process.versions.node} lacks the October 2026 security fixes: use Node 22.23.4+, 24.22.1+ or 26.12.1+ (https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)`;
+  if (process.env.A11Y_ALLOW_OLD_NODE === '1') console.error('warning: ' + msg);
+  else { console.error(msg + '. Set A11Y_ALLOW_OLD_NODE=1 to run anyway.'); process.exit(3); }
+}
 export const DARK = process.env.A11Y_DARK_CLASS || 'dark';   // body class a host uses for its dark theme (fragment mode)
 const DARK_ATTR = process.env.A11Y_DARK_ATTR || '';          // live mode, for sites that switch theme with an attribute, e.g. data-theme=dark (otherwise prefers-color-scheme is used)
 const DARK_STORE = process.env.A11Y_DARK_STORAGE || '';      // live mode, for sites that remember the theme in localStorage, e.g. a2ui-theme=dark

@@ -162,3 +162,10 @@ def test_report_where_no_page_could_be_audited_exits_3(tmp_path):
 def test_sigterm_removes_the_temp_dir_without_an_engine():
     src = (SCRIPTS / 'ratchet.py').read_text()          # reading the code: a SIGTERM between engines is hard to time in a test
     assert 'TEMP.append(t)' in src and 'for t in TEMP:' in src
+
+
+def test_node_without_the_october_2026_security_fixes_is_refused():
+    js = ("import('./lib.mjs').then(L => console.log(JSON.stringify(['20.19.2', '22.23.3', '22.23.4', '24.22.0', '24.22.1', '25.9.0', '26.12.1', '27.0.0']"
+          ".map(v => L.nodeVersionOk(v)))))")
+    r = subprocess.run(['node', '-e', js], capture_output=True, text=True, cwd=SCRIPTS, timeout=30)
+    assert json.loads(r.stdout) == [False, False, True, False, True, False, True, True], r.stderr

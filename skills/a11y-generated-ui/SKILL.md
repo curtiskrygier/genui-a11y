@@ -11,7 +11,7 @@ description: >-
   UI, or when adding components to a catalog. Not a substitute for a screen
   reader or disabled-user testing.
 license: MIT
-compatibility: Needs Python 3, Node 20+ and a Chromium; npm ci in scripts/ once.
+compatibility: Needs Python 3, Node 22.23.4+ / 24.22.1+ (older is refused) and a Chromium; npm ci in scripts/ once.
 ---
 
 # a11y-generated-ui
